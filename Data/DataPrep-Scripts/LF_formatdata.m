@@ -6,7 +6,8 @@ function LF_formatdata
 % OUTPUT: writes a table for R analysis
 % 
 % NOTES ABOUT DATA
-% This script refers to the data on the Box Folder.
+% This script refers to .mat files in the "Data" folder, and
+% that must be downloaded (ideally through github) for this script to work.
 % Subjects 1-17: only one baseline run, and criterion RT is calculated
 % based on the 48 trials from one baseline run.
 % Subjects 18-51: changed to two baseline runs prior to incentive runs, and
@@ -36,9 +37,9 @@ for i = 1:length(subjects)
         
         % load subject data for run8 (baseline 1)
         if str2double(subjects{i})<10
-            load(['/Users/debbieyee/Box Sync/Aging Motivation (SRNDNA)/Data/Behavioral/s0',subjects{i},'/LF_s0',subjects{i},'_session4_run8_mixed.mat']);
+            load(['../Behavioral/s0',subjects{i},'/LF_s0',subjects{i},'_session4_run8_mixed.mat']);
         else
-            load(['/Users/debbieyee/Box Sync/Aging Motivation (SRNDNA)/Data/Behavioral/s',subjects{i},'/LF_s',subjects{i},'_session4_run8_mixed.mat']);
+            load(['../Behavioral/s',subjects{i},'/LF_s',subjects{i},'_session4_run8_mixed.mat']);
         end
         
         % Identify relevant variables for baseline 1
@@ -89,7 +90,8 @@ for i = 1:length(subjects)
         for r = 1:length(runs_baseline_s18_s51)
             
             % load subject baseline data
-            load(['/Users/debbieyee/Box Sync/Aging Motivation (SRNDNA)/Data/Behavioral/s',subjects{i},'/LF_s',subjects{i},'_session4_run',num2str(runs_baseline_s18_s51(r)),'_mixed.mat']);
+            %load(['/Users/debbieyee/Box Sync/Aging Motivation (SRNDNA)/Data/Behavioral/s',subjects{i},'/LF_s',subjects{i},'_session4_run',num2str(runs_baseline_s18_s51(r)),'_mixed.mat']);
+            load(['../Behavioral/s',subjects{i},'/LF_s',subjects{i},'_session4_run',num2str(runs_baseline_s18_s51(r)),'_mixed.mat']);
             
             % Identify relevant variables for baseline 1
             sid = cellstr(repmat(subjects{i},48,1));
@@ -152,11 +154,9 @@ for i = 1:length(subjects)
         else
             %load the subject incentive data
             if str2double(subjects{i})<10
-                %load(['/Users/debbieyee/Dropbox/CCPLabProjects/LiquidFeedback_FMRI/Data/Behavioral/s0',subjects{i},'/LF_s0',subjects{i},'_session4_run',num2str(runs_incentive(r)),'_mixed.mat']);
-                load(['/Users/debbieyee/Box Sync/Aging Motivation (SRNDNA)/Data/Behavioral/s0',subjects{i},'/LF_s0',subjects{i},'_session4_run',num2str(runs_incentive(r)),'_mixed.mat']);
+                load(['../Behavioral/s0',subjects{i},'/LF_s0',subjects{i},'_session4_run',num2str(runs_incentive(r)),'_mixed.mat']);
             elseif str2double(subjects{i})>=10
-                %load(['/Users/debbieyee/Dropbox/CCPLabProjects/LiquidFeedback_FMRI/Data/Behavioral/s',subjects{i},'/LF_s',subjects{i},'_session4_run',num2str(runs_incentive(r)),'_mixed.mat']);
-                load(['/Users/debbieyee/Box Sync/Aging Motivation (SRNDNA)/Data/Behavioral/s',subjects{i},'/LF_s',subjects{i},'_session4_run',num2str(runs_incentive(r)),'_mixed.mat']);
+                load(['../Behavioral/s',subjects{i},'/LF_s',subjects{i},'_session4_run',num2str(runs_incentive(r)),'_mixed.mat']);
             else
                 disp(['Error loading subject incentive data for subject ' subjects{i}]);
             end
@@ -208,8 +208,9 @@ end
 
 
 % write trial table to directory
-%writetable(T_trialdata,'/Users/debbieyee/Dropbox/CCPLabProjects/LiquidFeedback_FMRI/Data/Trimmed/subject_data.txt','Delimiter','\t');
-writetable(T_trialdata,'/Users/debbieyee/Box Sync/Aging Motivation (SRNDNA)/Data/Trimmed/subject_data.txt','Delimiter','\t');
+currentFolder = pwd;
+dataFolder = currentFolder(1:end-16);
+writetable(T_trialdata,[dataFolder,'Trimmed/subject_data.txt'],'Delimiter','\t');
 disp('Completed creating table of trial data for all subjects, and saved to computer.');
 
 %% Creating a Tables out Stimuli Times for Cues and Targets for all runs
@@ -222,9 +223,9 @@ for i = 1:length(subjects)
         
         % load subject data for run8 (baseline 1)
         if str2double(subjects{i})<10
-            load(['/Users/debbieyee/Box Sync/Aging Motivation (SRNDNA)/Data/Behavioral/s0',subjects{i},'/LF_s0',subjects{i},'_session4_run8_mixed.mat']);
+            load(['../Behavioral/s0',subjects{i},'/LF_s0',subjects{i},'_session4_run8_mixed.mat']);
         else
-            load(['/Users/debbieyee/Box Sync/Aging Motivation (SRNDNA)/Data/Behavioral/s',subjects{i},'/LF_s',subjects{i},'_session4_run8_mixed.mat']);
+            load(['../Behavioral/s',subjects{i},'/LF_s',subjects{i},'_session4_run8_mixed.mat']);
         end
         
         % identify relevant variables for stimulus onsets in incentive runs
@@ -251,7 +252,7 @@ for i = 1:length(subjects)
         for r = 1:length(runs_baseline_s18_s51)
             
             % load subject baseline data
-            load(['/Users/debbieyee/Box Sync/Aging Motivation (SRNDNA)/Data/Behavioral/s',subjects{i},'/LF_s',subjects{i},'_session4_run8_mixed.mat']);
+            load(['../Behavioral/s',subjects{i},'/LF_s',subjects{i},'_session4_run8_mixed.mat']);
             
             % identify relevant variables for stimulus onsets in incentive runs
             sid=cellstr(repmat(subjects{i},292,1));
@@ -289,9 +290,9 @@ for i = 1:length(subjects)
         else            
             %load the subject data
             if str2double(subjects{i})<10
-                load(['/Users/debbieyee/Dropbox/CCPLabProjects/LiquidFeedback_FMRI/Data/Behavioral/s0',subjects{i},'/LF_s0',subjects{i},'_session4_run',num2str(runs_incentive(r)),'_mixed.mat']);
+                load(['../Behavioral/s0',subjects{i},'/LF_s0',subjects{i},'_session4_run',num2str(runs_incentive(r)),'_mixed.mat']);
             elseif str2double(subjects{i})>=10
-                load(['/Users/debbieyee/Dropbox/CCPLabProjects/LiquidFeedback_FMRI/Data/Behavioral/s',subjects{i},'/LF_s',subjects{i},'_session4_run',num2str(runs_incentive(r)),'_mixed.mat']);
+                load(['../Behavioral/s',subjects{i},'/LF_s',subjects{i},'_session4_run',num2str(runs_incentive(r)),'_mixed.mat']);
             else
                 disp(['Error loading subject incentive data for subject ' subjects{i}]);
             end
@@ -313,7 +314,9 @@ for i = 1:length(subjects)
 end
 
 % write incentive table to directory
-writetable(T_stimdata,'/Users/debbieyee/Box Sync/Aging Motivation (SRNDNA)/Data/Trimmed/stim_present_data.txt','Delimiter','\t');
+currentFolder = pwd;
+dataFolder = currentFolder(1:end-16);
+writetable(T_stimdata,[dataFolder,'Trimmed/stim_present_data.txt'],'Delimiter','\t');
 disp('Completed creating table of stimulus presentations for all subjects, and saved to computer.');
 
 
