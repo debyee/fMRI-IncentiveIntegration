@@ -1,0 +1,1720 @@
+---
+title: "fMRI Liquid Feedback -- Behavioral Analysis"
+author: "Debbie Yee"
+date: "1/19/2018"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+This is an analysis of the subject performance (behavioral) of the fMRI liquid feedback study paradigm. In the study, subjects perform the cued task-switching paradigm, where they have classify a letter (vowel/consonant) or digit (odd/even). During the baseline run(s), they don't receive any feedback and are told to respond "as quickly and accurate as possible." During the incentive runs, they receive a drop of liquid (1 or 2 mL) to indicate successful attainment of monetary reward in a single trial. Each subject performs 6 incentive runs, and liquids are blocked (two blocks of each liquid in sequence). Criterion RT is calculated on subject performance during the baseline run (37.5%). 
+
+Subjects 1-17: one baseline run, 6 incentive runs
+
+Subjects 17-51: two baseline runs, 6 incentive runs
+
+# Loading relevant packages
+```{r, message=FALSE}
+library(ggplot2)
+library(gridExtra)
+library(dplyr)
+library(tidyr)
+library(pander)
+library(lme4)
+library(lmerTest)
+library(sjPlot)
+library(here)
+source(here("Analysis/helper-functions/summarySEwithin2.R"))
+```
+
+# Path Directories of Data Input/Ouput
+```{r}
+# Paths for data  
+stim_data.path<-here("Data/Trimmed/stim_present_data.txt")
+subj_data.path<-here("Data/Trimmed/subject_data.txt")
+runkey.path<-here("Data/Trimmed/runkey.csv")
+selfreport.path <- here("Data/Redcap/LF_selfreport.csv")
+
+# Paths for storing Figures
+figure.path<-here("Analysis/Figures")
+```
+
+# Read in the data, format/average data based on relevant conditions
+```{r}
+# read in the formatted data, and converting to table (dplyr function)
+subject_data <- tbl_df(read.delim(subj_data.path))
+stim_data <- tbl_df(read.delim(stim_data.path))
+runkey <- tbl_df(read.csv(runkey.path))
+selfreport<-tbl_df(read.csv(selfreport.path))
+# criterion RT only
+critRTkey<-unique(select(runkey,subID,critRT))  
+
+# BASELINE subject data (filter using data pipeline from dplyr)
+base <- filter(subject_data,runType=="baseline") %>%
+  select(subID,runID,runType,trial,RT,ACC,switch_trial,task,congruency) %>%
+  mutate(ERR=ifelse(ACC==0,1,0))
+
+base.means <- base %>% group_by(subID) %>% 
+  summarise(n=n(), meanACC = mean(ACC, na.rm=TRUE), seACC = sd(ACC, na.rm=TRUE)/sqrt(n-1),
+            meanERR = mean(ERR, na.rm=TRUE), seERR = sd(ERR,na.rm=TRUE)/sqrt(n-1))
+baseRT.means <- base %>% group_by(subID) %>% filter(ACC==1) %>%
+  summarise(n=n(), meanRT = mean(RT), seRT = sd(RT)/sqrt(n-1))
+
+# INCENTIVE subject data (filter using data pipeline from dplyr)
+incentive <- subject_data %>% filter(runType=="incentive" & !is.na(RT)) %>%
+  select(subID,runID,runType,trial,RT,ACC,switch_trial,task,congruency,Feedback,
+         moneyreward,money = moneysymbol) %>%
+  inner_join(runkey, by=c("subID","runID")) %>%
+  mutate(critRT = critRT, 
+         subRewarded = (RT<critRT & ACC==1)*1,
+         ERR=ifelse(ACC==0,1,0),
+         moneyCode = factor(moneyreward, levels = c(1,2,4), labels = c(-1,0,1)),
+         liqCode = factor(liquid,levels=c("saltwater","neutral","juice"),
+                                       labels=c(-1,0,1)),
+         rankCode = factor(rank,levels=c(1,2,3),labels=c(1,0,-1)),
+         orderCode = factor(rank,levels=c(1,2,3),labels=c(-1,0,1)),
+         liqCodeJvN = factor(liquid,levels=c("saltwater","neutral","juice"),
+                                       labels=c(0,-1,1)),
+         liqCodeSvN = factor(liquid,levels=c("saltwater","neutral","juice"),
+                                       labels=c(-1,1,0)),
+         subID=as.factor(subID)) %>%
+  group_by(subID) %>%
+  mutate(zRT = scale(RT,center = TRUE, scale = TRUE))
+incentive$moneyCode <- as.numeric(levels(incentive$moneyCode)[incentive$moneyCode])
+incentive$liqCode <- as.numeric(levels(incentive$liqCode)[incentive$liqCode])
+incentive$rankCode <- as.numeric(levels(incentive$rankCode)[incentive$rankCode])
+incentive$orderCode <- as.numeric(levels(incentive$orderCode)[incentive$orderCode])
+incentive$liqCodeJvN <- as.numeric(levels(incentive$liqCodeJvN)[incentive$liqCodeJvN])
+incentive$liqCodeSvN <- as.numeric(levels(incentive$liqCodeSvN)[incentive$liqCodeSvN])
+
+incentive.means <- incentive %>% group_by(subID) %>%
+  summarise(n=n(), meanRR = mean(subRewarded, na.rm=TRUE), 
+            seRR = sd(subRewarded, na.rm=TRUE)/sqrt(n-1),
+            meanACC = mean(ACC, na.rm=TRUE), seACC = sd(ACC, na.rm=TRUE)/sqrt(n-1),
+            meanERR = mean(ERR, na.rm=TRUE), seERR = sd(ERR,na.rm=TRUE)/sqrt(n-1))
+incentiveRT.means <- incentive %>% group_by(subID) %>% filter(ACC==1) %>%
+  summarise(n=n(), meanRT = mean(RT, na.rm=TRUE), seRT = sd(RT)/sqrt(n-1))
+```
+
+# Subject Task Performance on Baseline Data
+```{r, fig.height=3, fig.width=8}
+# RT 
+# plotting mean RT by subject
+p.base1 <- ggplot(data = baseRT.means, aes(x = as.factor(subID), y = meanRT)) + 
+  geom_col() + 
+  geom_errorbar(aes(ymin = meanRT-seRT, ymax = meanRT+seRT), stat="identity", width = 0.5) + 
+  xlab("Subject ID") + ylab("Response Time (ms)") + ggtitle("Individual Subject Baseline RT")
+p.base1
+
+# plotting boxplot to see if any subjects are outliers in terms of performance
+# subset based on accurate trials only
+baseRT <- base %>% filter(ACC==1) %>%
+  left_join(y = critRTkey, by=c("subID"))
+p.base2 <- ggplot(data = baseRT, aes(x = subID, y = RT, group=subID)) +
+  geom_boxplot() +
+  xlab("Subject ID") + ylab("Response Time (ms)") + 
+  ggtitle("Individual Subject Baseline RT Distributions")
+p.base2
+
+# Accuracy
+# plotting mean accuracy by subject
+p.base3 <- ggplot(data = base.means, aes(x = as.factor(subID), y = meanACC)) + 
+  geom_col() + 
+  geom_errorbar(aes(ymin = meanACC-seACC, ymax = meanACC+seACC), stat="identity", width = 0.5) + 
+  xlab("Subject ID") + ylab("Error Rate") + ggtitle("Individual Subject Baseline Accuracy") +
+  coord_cartesian(ylim=c(.6,1)) 
+p.base3
+
+# Error Rate
+# plotting the mean error rate per subject
+p.base4 <- ggplot(data = base.means, aes(x = as.factor(subID), y = meanERR)) + 
+  geom_col() + 
+  geom_errorbar(aes(ymin = meanERR-seERR, ymax = meanERR+seERR), stat="identity", width = 0.5) + 
+  xlab("Subject ID") + ylab("Error Rate") + ggtitle("Individual Subject Baseline Error Rate") +
+  coord_cartesian(ylim=c(0,.5)) 
+p.base4
+```
+
+# Plotting histograms of RT distributions per subject
+Below are histograms of RTs during the baseline RTs for each subject. The red line indicates the criterion RT that is calculated based on 37.5% of subject task performance.
+```{r,fig.height=12, fig.width=10}
+# plotting histograms of RT distributions per subject
+p.base5 <- ggplot(data = baseRT, mapping = aes(x = RT)) +
+  geom_histogram(bins=10) + 
+  facet_wrap(~subID) +
+  scale_x_continuous(limits=c(0,2000)) + scale_y_continuous(limits=c(0,60)) +
+  xlab("Response Times (ms)") + ylab("Counts") + ggtitle("Subject Baseline RT Distributions") + 
+  geom_vline(aes(xintercept = critRT), na.rm = FALSE, color="red") + 
+  geom_text(aes(x= 1700, y = 50, label = critRT), size=3) 
+p.base5
+```
+
+\newpage
+# Speed-Accuracy Plot in the Baseline Run(s)
+```{r}
+base.sa<-left_join(x = baseRT.means, y = base.means, by="subID")
+p.base6 <- ggplot(data = base.sa, mapping = aes(x = meanACC, y = meanRT)) +
+  geom_point() +
+  stat_smooth(method="lm", se=FALSE) +
+  xlab("Accuracy") + ylab("Response Time (ms)") +
+  ggtitle("Speed-Accuracy Baseline Data") +
+  theme_bw()
+p.base6
+```
+
+# Subject Task Performance on Incentive Conditions
+```{r, fig.height=3, fig.width=8}
+# RT
+# plotting mean RT by subject
+p.inc1 <- ggplot(data = incentiveRT.means, aes(x = as.factor(subID), y = meanRT)) +
+  geom_col() +
+  geom_errorbar(aes(ymin = meanRT-seRT, ymax = meanRT+seRT), stat="identity", width = 0.5) +
+  xlab("Subject ID") + ylab("Response Time (ms)") + ggtitle("Individual Subject Incentive RT")
+p.inc1
+
+# plotting boxplot to see if any subjects are outliers in terms of performance
+# subset based on accurate trials only
+incRT <- incentive %>% filter(ACC==1)
+p.inc2 <- ggplot(data = incRT, aes(x = subID, y = RT, group=subID)) +
+  geom_boxplot() +
+  xlab("Subject ID") + ylab("Response Time (ms)") + ggtitle("Individual Subject Incentive RT Distributions")
+p.inc2
+
+# Accuracy
+# plotting mean accuracy by subject
+p.inc3 <- ggplot(data = incentive.means, aes(x = as.factor(subID), y = meanACC)) +
+  geom_col() +
+  geom_errorbar(aes(ymin = meanACC-seACC, ymax = meanACC+seACC), stat="identity", width = 0.5) +
+  xlab("Subject ID") + ylab("Accuracy") + ggtitle("Individual Subject Incentive Accuracy") +
+  coord_cartesian(ylim=c(.6,1))
+p.inc3
+
+# Error Rate
+# plotting the mean error rate per subject
+p.inc4 <- ggplot(data = incentive.means, aes(x = as.factor(subID), y = meanERR)) +
+  geom_col() +
+  geom_errorbar(aes(ymin = meanERR-seERR, ymax = meanERR+seERR), stat="identity", width = 0.5) +
+  xlab("Subject ID") + ylab("Error Rate") + ggtitle("Individual Subject Incentive Error Rate") +
+  coord_cartesian(ylim=c(0,.5))
+p.inc4
+```
+
+\newpage
+# Comparison of Baseline to First Incentive Run
+```{r, fig.width=6, fig.height=5}
+base.inc1 <-subject_data %>% filter(runID<=9) %>%
+  select(subID,runID,runType,trial,RT,ACC,switch_trial,task,congruency) %>%
+  mutate(ERR=ifelse(ACC==0,1,0))
+base.inc1.means <- base.inc1 %>% group_by(subID,runType) %>%
+  summarise(n=n(), meanACC = mean(ACC, na.rm=TRUE), seACC = sd(ACC, na.rm=TRUE)/sqrt(n-1),
+            meanERR = mean(ERR, na.rm=TRUE), seERR = sd(ERR,na.rm=TRUE)/sqrt(n-1)) %>%
+  ungroup(subID) %>%
+  mutate(subID = factor(subID))
+base.inc1.RT.means <- base.inc1 %>% group_by(subID,runType) %>% filter(ACC==1) %>%
+  summarise(n=n(), meanRT = mean(RT), seRT = sd(RT)/sqrt(n-1)) %>%
+  ungroup(subID) %>%
+  mutate(subID = factor(subID))
+
+# RT
+p.bi1 <- ggplot(data = base.inc1.RT.means,aes(x = runType, y = meanRT, group=subID, color=subID)) +
+  geom_line() +
+  xlab("Run Type") + ylab("Response Time (ms)") +
+  ggtitle("RT between Baseline and 1st Incentive Run") +
+  theme_bw()
+p.bi1
+
+# Accuracy
+p.bi2 <- ggplot(data = base.inc1.means,aes(x = runType, y = meanACC, group=subID, color=subID)) +
+  geom_line() +
+  xlab("Run Type") + ylab("Accuracy") +
+  ggtitle("Accuracy between Baseline and 1st Incentive Run") +
+  theme_bw()
+p.bi2
+
+# Error Rate
+p.bi3 <- ggplot(data = base.inc1.means,aes(x = runType, y = meanERR, group=subID, color=subID)) +
+  geom_line() +
+  xlab("Run Type") + ylab("Error Rate") +
+  ggtitle("Subject Error Rate between Baseline and 1st Incentive Run") +
+  theme_bw()
+p.bi3
+```
+
+\newpage
+# Consolidating Incentive Data
+```{r}
+# summarise the means of the incentive data for each subject, grouped by condition
+incentive9RT.means <- incentive %>% group_by(subID, liquid, money) %>%
+  filter(!is.na(subRewarded), ACC==1) %>% summarise(n=n(), meanRT = mean(RT)) %>%
+  mutate(moneycode = as.numeric(as.character(factor(money,levels=c("$","$$","$$$$"),labels=c(-1,0,1)))),
+         liqcode = as.numeric(as.character(factor(liquid,levels=c("saltwater","neutral","juice"),
+                                                  labels=c(-1,0,1))))) %>%
+  ungroup(subID) %>% mutate(subID=as.factor(subID))
+incentive9.means = incentive %>% group_by(subID, liquid, money) %>% filter(!is.na(subRewarded)) %>%
+  summarise(n = n(), meanRR = mean(subRewarded), meanACC = mean(ACC), meanERR = mean(ERR)) %>%
+  mutate(moneycode = as.numeric(as.character(factor(money,levels=c("$","$$","$$$$"),
+                                                    labels=c(-1,0,1)))),
+         liqcode = as.numeric(as.character(factor(liquid,levels=c("saltwater","neutral","juice"),
+                                                  labels=c(-1,0,1))))) %>%
+  ungroup(subID) %>% mutate(subID=as.factor(subID))
+
+# summarise means by monetary reward only
+rewRT.means = incentive %>% group_by(subID, money) %>%
+  filter(!is.na(subRewarded), ACC==1) %>% filter(!is.na(subRewarded), ACC==1) %>%
+  summarise(n=n(),meanRT = mean(RT))
+rew.means = incentive %>% group_by(subID,money) %>% filter(!is.na(subRewarded)) %>%
+  summarise(n=n(), meanRR = mean(subRewarded), meanACC = mean(ACC), meanERR = mean(ERR))
+
+# summarise means by liquid incentive type only
+liqRT.means = incentive %>% group_by(subID, liquid) %>% filter(!is.na(subRewarded), ACC==1) %>% summarise(meanRT = mean(RT))
+liq.means=incentive %>% group_by(subID, liquid) %>% filter(!is.na(subRewarded)) %>%
+  summarise(n=n(), meanRR = mean(subRewarded), meanACC = mean(ACC), meanERR = mean(ERR))
+
+#summarise means by liquid rank only
+sub.evenrank<-c(6,14,26,41,42,48)
+liqrankRT.means = incentive %>% group_by(subID, rank) %>% filter(!is.na(subRewarded), ACC==1, !is.na(rank)) %>%
+  summarise(meanRT = mean(RT)) %>%
+  filter(!subID %in% sub.evenrank)
+liqrank.means=incentive %>% group_by(subID, rank) %>% filter(!is.na(subRewarded), !is.na(rank)) %>%
+  summarise(n=n(), meanRR = mean(subRewarded), meanACC = mean(ACC), meanERR = mean(ERR)) %>%
+  filter(!subID %in% sub.evenrank)
+
+# summarise means by liquid rank AND monetary reward
+liqrank.rew.RT.means = incentive %>% group_by(subID, rank,money) %>% filter(!is.na(subRewarded), ACC==1, !is.na(rank)) %>%
+  summarise(meanRT = mean(RT)) %>%
+  filter(!subID %in% sub.evenrank)
+liqrank.rew.means=incentive %>% group_by(subID, rank,money) %>% filter(!is.na(subRewarded), !is.na(rank)) %>%
+  summarise(n=n(), meanRR = mean(subRewarded), meanACC = mean(ACC), meanERR = mean(ERR)) %>%
+  filter(!subID %in% sub.evenrank)
+
+#summarise means by liquid order only
+liqorderRT.means = incentive %>% group_by(subID, order) %>% filter(!is.na(subRewarded), ACC==1, !is.na(rank)) %>%
+  summarise(meanRT = mean(RT))
+liqorder.means=incentive %>% group_by(subID, order) %>% filter(!is.na(subRewarded), !is.na(rank)) %>%
+  summarise(n=n(), meanRR = mean(subRewarded), meanACC = mean(ACC), meanERR = mean(ERR))
+```
+
+\newpage
+# Reward Rate by Monetary Reward
+```{r}
+RR.sum=summarySEwithin2(data=rew.means, measurevar = "meanRR", withinvars = c("money"),
+                        idvar = "subID")
+p.RR.1<-ggplot(RR.sum, aes(x=money, y=meanRR)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", fill='red4', stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=meanRR-se, ymax=meanRR+se), width=.2) +
+  xlab("Monetary Reward") + ylab("Reward Rate") +
+  #ggtitle("Task Performance Across Money") +
+  coord_cartesian(ylim=c(.5,.8)) +
+  scale_fill_discrete(name="Monetary Reward") +
+  theme_classic() +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=14,face = "bold"),
+        axis.text=element_text(size=18),
+        legend.position="none",
+        strip.text.x = element_text(size = 14, face = "bold"))
+p.RR.1
+pandoc.table(RR.sum)
+```
+
+# Reward Rate by Liquid Type
+```{r}
+RR.sum=summarySEwithin2(data=liq.means, measurevar = "meanRR", withinvars = c("liquid"),
+                        idvar = "subID")
+p.RR.2<-ggplot(RR.sum, aes(x=liquid, y=meanRR)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", fill='thistle',stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=meanRR-se, ymax=meanRR+se), width=.2) +
+  xlab("Liquid Incentive") + ylab("Reward Rate") +
+  #ggtitle("Task Performance Across Liquid Type") +
+  coord_cartesian(ylim=c(.5,.85)) +
+  scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))
+p.RR.2
+pandoc.table(RR.sum)
+```
+
+# Reward Rate by Monetary Reward and Liquid Type
+```{r}
+RR.sum=summarySEwithin2(data=incentive9.means, measurevar = "meanRR",
+                        withinvars = c("money","liquid"), idvar = "subID")
+p.RR.3<-ggplot(RR.sum, aes(x=liquid, y=meanRR, fill=money)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=meanRR-se, ymax=meanRR+se), width=.2) +
+  labs(x="Liquid Feedback", y="Reward Rate") +
+  #ggtitle("Task Performance Across Money and Liquid Type") +
+  coord_cartesian(ylim=c(.5,.8)) +
+  scale_fill_discrete(name="Monetary Reward") +
+  theme_classic() +
+  theme(plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=18,face = "bold"),
+        axis.text=element_text(size=18),
+        legend.position="top",
+        legend.title=element_text(size=16), 
+        legend.text=element_text(size=16),
+        strip.text.x = element_text(size = 14, face = "bold"))
+p.RR.3
+pandoc.table(RR.sum)
+
+p.RR.4<-ggplot(RR.sum, aes(x=liquid, y=meanRR, fill=money)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=meanRR-se, ymax=meanRR+se), width=.2) +
+  facet_wrap(~money) +
+  xlab("Monetary Reward") + ylab("Reward Rate") +
+  ggtitle("Task Performance Across Money and Liquid Type") +
+  coord_cartesian(ylim=c(.5,.8)) +
+  scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        #axis.text=element_text(size=14),
+        legend.position="top",
+        strip.text.x = element_text(size = 12))
+p.RR.4
+
+
+ggplot(data = incentive9.means, mapping = aes(x = money, y = meanRR, col=subID, group=subID)) + 
+  facet_grid(~liquid) + 
+  geom_point() + 
+  geom_line()
+```
+
+\newpage
+# Reward Rate by Liquid Rank
+Note that we removed 6 subjects because they rated some liquids with equal preference. So N=40 in these plots.
+```{r}
+RR.sum=summarySEwithin2(data=liqrank.means, measurevar = "meanRR",
+                        withinvars = c("rank"), idvar = "subID")
+p.RR.5<-ggplot(RR.sum, aes(x=rank, y=meanRRNormed)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", fill="cadetblue3",stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=meanRR-se, ymax=meanRR+se), width=.2) +
+  xlab("Liquid Rank") + ylab("Reward Rate") +
+  ggtitle("Task Performance Across Liquid Rank") +
+  coord_cartesian(ylim=c(.5,.8)) +
+  scale_fill_discrete(name="Liquid Rank") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="right",
+        strip.text.x = element_text(size = 12))
+p.RR.5
+pandoc.table(RR.sum)
+```
+
+# Reward Rate by Monetary Reward and Liquid Rank
+```{r}
+RR.sum=summarySEwithin2(data=liqrank.rew.means, measurevar = "meanRR",
+                        withinvars = c("money","rank"), idvar = "subID")
+p.RR.6<-ggplot(RR.sum, aes(x=rank, y=meanRR, fill=money)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=meanRR-se, ymax=meanRR+se), width=.2) +
+  xlab("Liquid Rank") + ylab("Reward Rate") +
+  ggtitle("Task Performance Across Money and Liquid Rank") +
+  coord_cartesian(ylim=c(.5,.8)) +
+  scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="top",
+        strip.text.x = element_text(size = 12))
+p.RR.6
+pandoc.table(RR.sum)
+
+p.RR.7<-ggplot(RR.sum, aes(x=rank, y=meanRR, fill=money)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=meanRR-se, ymax=meanRR+se), width=.2) +
+  facet_wrap(~money) +
+  xlab("Liquid Rank") + ylab("Reward Rate") +
+  ggtitle("Task Performance Across Money and Liquid Rank") +
+  coord_cartesian(ylim=c(.5,.8)) +
+  scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        #axis.text=element_text(size=14),
+        legend.position="top",
+        strip.text.x = element_text(size = 12))
+p.RR.7
+```
+
+\newpage
+# Reward Rate by Liquid Order
+```{r}
+RR.sum=summarySEwithin2(data=liqorder.means, measurevar = "meanRR",
+                        withinvars = c("order"), idvar = "subID")
+p.RR.8<-ggplot(RR.sum, aes(x=order, y=meanRR)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", fill="darkgoldenrod3", stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=meanRR-se, ymax=meanRR+se), width=.2) +
+  xlab("Liquid Order") + ylab("Reward Rate") +
+  ggtitle("Task Performance Across Liquid Order") +
+  coord_cartesian(ylim=c(.5,.8)) +
+  scale_fill_discrete(name="Liquid Order") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))
+p.RR.8
+pandoc.table(RR.sum)
+```
+
+\newpage
+# Generalized Linear Mixed Effects Models (GLMM)
+Model Comparison to finalize random effects. It seem as if including both random intercepts for both monetary reward and liquid incentives include model prediction significantly, but only when they are added and without their interaction.
+A brief note on REML-- you only need to use REML=TRUE when comparing random effects, use REML=FALSE when comparing fixed effects (??) /newline
+Interestingly, we see that the random slope for liquid explains significantly more variability than the random slope for money. This actually makes sense since there is a lot more variability in subjective preferences for the liquids than the money. If you switch models t2 and t3 below in the anova(), you'll see this pattern more clearly.
+```{r}
+boxplot(meanRR ~ money*liquid, incentive9.means)
+incentive.subset <- filter(incentive, subset=="yes")
+
+m.RR.t1 <-glmer(formula = subRewarded ~  moneyCode*liqCode + (1|subID),
+          data = incentive, family=binomial)
+m.RR.t2 <-glmer(formula = subRewarded ~  moneyCode*liqCode + (1+moneyCode|subID),
+          data = incentive, family=binomial)
+m.RR.t3 <-glmer(formula = subRewarded ~  moneyCode*liqCode + (1+liqCode|subID),
+          data = incentive, family=binomial)
+m.RR.t4 <-glmer(formula = subRewarded ~  moneyCode*liqCode + (1+moneyCode+liqCode|subID),
+          data = incentive, family=binomial)
+m.RR.t5 <-glmer(formula = subRewarded ~  moneyCode*liqCode + (1+moneyCode*liqCode|subID),
+          data = incentive, family=binomial)
+# m.RR.t1 <-lmer(formula = subRewarded ~  liqCode*moneyCode + (1|subID),
+#           data = incentive, REML = TRUE)
+# m.RR.t2 <-lmer(formula = subRewarded ~  liqCode*moneyCode + (1+moneyCode|subID),
+#           data = incentive, REML = TRUE)
+# m.RR.t3 <-lmer(formula = subRewarded ~  liqCode*moneyCode + (1+moneyCode+liqCode|subID),
+#           gdata = incentive, REML = TRUE)
+# m.RR.t4 <-lmer(formula = subRewarded ~  liqCode*moneyCode + (1+moneyCode*liqCode|subID),
+#           data = incentive, REML = TRUE)
+anova(m.RR.t1,m.RR.t2,m.RR.t3,m.RR.t4,m.RR.t5)
+```
+
+
+SFN
+```{r}
+# model with no random intercepts
+m.test<-glmer(formula = subRewarded ~  moneyCode*liqCode + (1|subID),
+          data = subset(incentive, liqCode!=1), family=binomial)
+summary(m.test)
+
+
+# no random intercepts
+m.test<-glmer(formula = subRewarded ~  moneyCode + (1|subID),
+          data = subset(incentive, moneyCode!=1), family=binomial)
+summary(m.test)
+# no random intercepts
+m.test<-glmer(formula = subRewarded ~  moneyCode + (1|subID),
+          data = subset(incentive, moneyCode!=0), family=binomial)
+summary(m.test)
+# no random intercepts
+m.test<-glmer(formula = subRewarded ~  moneyCode + (1|subID),
+          data = subset(incentive, moneyCode!=-1), family=binomial)
+summary(m.test)
+```
+
+
+Mixed Model with Money and Liquid Type
+```{r}
+# null model
+m.RR.null <-glmer(formula = subRewarded ~ (1+moneyCode+liqCode|subID),
+          data = incentive, family=binomial)
+m.RR.null.binom <-glmer(formula = subRewarded ~ (1+moneyCode+liqCode|subID),
+          data = incentive, family=binomial)
+# full model
+# m.RR.1 <-lmer(formula = subRewarded ~  moneyCode*liqCode + (1+moneyCode|subID),
+#           data = incentive, REML = FALSE)
+# summary(m.RR.1)
+# anova(m.RR.null,m.RR.1)
+
+m.RR.1.binom <-glmer(formula = subRewarded ~  moneyCode*liqCode + (1+moneyCode+liqCode|subID),
+          data = incentive, family=binomial, REML=TRUE)
+summary(m.RR.1.binom)
+#plot_model(model = m.RR.1.binom, type = "est")
+#plot_model(model = m.RR.1.binom, type = "re")
+
+# liquid incentive only
+m.RR.1.liquid <-glmer(formula = subRewarded ~  liqCode + (1+liqCode|subID),
+          data = incentive, family=binomial)
+summary(m.RR.1.liquid)
+
+m.RR.1.liquid.binom <-glmer(formula = subRewarded ~  liqCode + (1+liqCode|subID),
+          data = incentive, family = binomial)
+summary(m.RR.1.liquid.binom)
+
+# monetary reward only
+m.RR.1.money <-glmer(formula = subRewarded ~  moneyCode + (1+moneyCode|subID),
+          data = incentive, family = binomial)
+summary(m.RR.1.money)
+
+m.RR.1.money.binom <-glmer(formula = subRewarded ~  moneyCode + (1+moneyCode|subID),
+          data = incentive, family = binomial)
+summary(m.RR.1.money.binom)
+```
+
+Money and Liquid Type, removing saltwater condition, no liquid effect
+```{r}
+m.RR.2 <-glmer(formula = subRewarded ~  moneyCode*liqCode + (1+moneyCode+liqCode|subID),
+          data = subset(incentive,liqCode!=-1), family=binomial)
+summary(m.RR.2)
+
+m.RR.3 <-glmer(formula = subRewarded ~  moneyCode*liqCode + (1+moneyCode+liqCode|subID),
+          data = subset(incentive,liqCode!=1), family=binomial)
+summary(m.RR.3)
+
+m.RR.money.juice <-glmer(formula = subRewarded ~  moneyCode + (1+moneyCode|subID),
+          data = subset(incentive,liqCode==1), family=binomial)
+summary(m.RR.money.juice)
+
+m.RR.money.neut <-glmer(formula = subRewarded ~  moneyCode + (1+moneyCode|subID),
+          data = subset(incentive,liqCode==0), family=binomial)
+summary(m.RR.money.neut)
+
+m.RR.money.salt <-glmer(formula = subRewarded ~  moneyCode + (1+moneyCode|subID),
+          data = subset(incentive,liqCode==-1), family=binomial)
+summary(m.RR.money.salt)
+```
+
+
+
+
+
+
+Money and Liquid Rank
+```{r}
+m.RR.3 <-glmer(formula = subRewarded ~  moneyCode*rankCode  + (1+moneyCode+rankCode|subID),
+          data = incentive, family=binomial)
+#coef(m.RR.3)
+#anova(m.RR.3)
+summary(m.RR.3)
+
+m.RR.3.rank <-glmer(formula = subRewarded ~  rankCode + (1+rankCode|subID),
+          data = incentive, family=binomial)
+summary(m.RR.3.rank)
+```
+
+Money and Liquid Rank, removing lowest ranked liquid, no liquid effect.
+```{r}
+m.RR.4 <-glmer(formula = subRewarded ~  moneyCode*rankCode  + (1+moneyCode+rankCode|subID),
+          data = subset(incentive,rankCode!=-1), family=binomial)
+#anova(m.RR.4)
+summary(m.RR.4)
+```
+
+# Histogram of Reward Rates by Condition
+```{r}
+p.RR.hist.1 <- ggplot(data = incentive9.means, mapping = aes(x = meanRR, fill=money)) +
+  geom_histogram(bins = 10, color="black") +
+  facet_grid(money~liquid) +
+  xlab("Reward Rates") + ylab("Count") +
+  ggtitle("Histogram of Reward Rates by conditions")
+p.RR.hist.1
+```
+
+
+# Response Time by Monetary Reward
+```{r}
+RT.sum=summarySEwithin2(data=rewRT.means, measurevar = "meanRT", withinvars = c("money"),
+                        idvar = "subID")
+p.RT.1<-ggplot(RT.sum, aes(x=money, y=meanRT)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", fill='darkmagenta', stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=meanRT-se, ymax=meanRT+se), width=.2) +
+  xlab("Monetary Reward") + ylab("Response Time (ms)") +
+  ggtitle("Task Performance Across Money") +
+  coord_cartesian(ylim=c(600,700)) +
+  scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))
+p.RT.1
+```
+
+# Response Time by Liquid Type
+```{r}
+RT.sum=summarySEwithin2(data=liqRT.means, measurevar = "meanRT", withinvars = c("liquid"),
+                        idvar = "subID")
+p.RT.2<-ggplot(RT.sum, aes(x=liquid, y=meanRT)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", fill='thistle',stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=meanRT-se, ymax=meanRT+se), width=.2) +
+  xlab("Liquid Incentive") + ylab("Response Time (ms)") +
+  ggtitle("Task Performance Across Liquid Type") +
+  coord_cartesian(ylim=c(600,700)) +
+  scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))
+p.RT.2
+```
+
+# Response Time by Monetary Reward and Liquid Type
+```{r}
+RT.sum=summarySEwithin2(data=incentive9RT.means, measurevar = "meanRT",
+                        withinvars = c("money","liquid"), idvar = "subID")
+p.RT.3<-ggplot(RT.sum, aes(x=liquid, y=meanRT, fill=money)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=meanRT-se, ymax=meanRT+se), width=.2) +
+  xlab("Monetary Reward") + ylab("Response Time (ms)") +
+  #ggtitle("Task Performance Across Money and Liquid Type") +
+  coord_cartesian(ylim=c(600,700)) +
+  scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="top",
+        strip.text.x = element_text(size = 12))
+p.RT.3
+
+p.RT.4<-ggplot(RT.sum, aes(x=liquid, y=meanRT, fill=money)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=meanRT-se, ymax=meanRT+se), width=.2) +
+  facet_wrap(~money) +
+  xlab("Monetary Reward") + ylab("Response Time (ms)") +
+  #ggtitle("Task Performance Across Money and Liquid Type") +
+  coord_cartesian(ylim=c(600,700)) +
+  scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="right",
+        strip.text.x = element_text(size = 12))
+p.RT.4
+```
+
+\newpage
+# Response Time by Liquid Rank
+Note that we removed 6 subjects because they rated some liquids with equal preference. So N=40 in these plots.
+```{r}
+RT.sum=summarySEwithin2(data=liqrankRT.means, measurevar = "meanRT",
+                        withinvars = c("rank"), idvar = "subID")
+p.RT.5<-ggplot(RT.sum, aes(x=rank, y=meanRT)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", fill="cadetblue3",stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=meanRT-se, ymax=meanRT+se), width=.2) +
+  xlab("Liquid Rank") + ylab("Response Time (ms)") +
+  ggtitle("Task Performance Across Liquid Rank") +
+  coord_cartesian(ylim=c(600,700)) +
+  scale_fill_discrete(name="Liquid Rank") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="right",
+        strip.text.x = element_text(size = 12))
+p.RT.5
+```
+
+# Response Time by Monetary Reward and Liquid Rank
+```{r}
+RT.sum=summarySEwithin2(data=liqrank.rew.RT.means, measurevar = "meanRT",
+                        withinvars = c("money","rank"), idvar = "subID")
+p.RT.6<-ggplot(RT.sum, aes(x=rank, y=meanRT, fill=money)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=meanRT-se, ymax=meanRT+se), width=.2) +
+  xlab("Liquid Rank") + ylab("Response Time (ms)") +
+  ggtitle("Task Performance Across Money and Liquid Rank") +
+  coord_cartesian(ylim=c(600,700)) +
+  scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="top",
+        strip.text.x = element_text(size = 12))
+p.RT.6
+```
+
+\newpage
+# Response Time: GLMM
+Mixed Effects Model of liquid and monetary reward on response time.
+RT does not need to be z-scored by subject, since we account for baseline subject differences in RT by including subject as a random intercept.
+Significant effect of money, no effect of liquid, but significant interaction between money and liquid.
+This appears to be heavily driven by the monetary reward differences in the saltwater feedback condition.
+```{r}
+incentiveRT<-filter(incentive,ACC==1)
+m.RT.1 <-lmer(formula = RT ~ moneyCode*liqCode  + (1+moneyCode+liqCode|subID),
+          data = incentiveRT, REML = FALSE)
+summary(m.RT.1)
+
+# post hoc
+# Juice vs Neutral
+m.RT.JvN <-lmer(formula = RT ~ liqCode  + (1+liqCode|subID),
+          data = subset(incentiveRT,liqCode!=-1), REML = FALSE)
+summary(m.RT.JvN)
+# Salt vs Neutral
+m.RT.SvN <-lmer(formula = RT ~ moneyCode*liqCode  + (1+moneyCode+liqCode|subID),
+          data = subset(incentiveRT,liqCode!=1), REML = FALSE)
+summary(m.RT.SvN)
+
+# Money effects in juice block
+m.RT.J <-lmer(formula = RT ~ moneyCode  + (1+moneyCode|subID),
+          data = subset(incentiveRT,liqCode==1), REML = FALSE)
+summary(m.RT.J)
+# Money effects in neut block
+m.RT.N <-lmer(formula = RT ~ moneyCode  + (1+moneyCode|subID),
+          data = subset(incentiveRT,liqCode==0), REML = FALSE)
+summary(m.RT.N)
+# Money effects in salt block
+m.RT.S <-lmer(formula = RT ~ moneyCode  + (1+moneyCode|subID),
+          data = subset(incentiveRT,liqCode==-1), REML = FALSE)
+summary(m.RT.S)
+
+
+m.RT.2 <-lmer(formula = RT ~ moneyCode*rankCode  + (1+moneyCode+liqCode|subID),
+          data = incentiveRT, REML = FALSE)
+summary(m.RT.2)
+
+```
+
+# Histogram of Response Times by Condition
+```{r}
+p.RT.hist.1 <- ggplot(data = incentive9RT.means, mapping = aes(x = meanRT, fill=money)) +
+  geom_histogram(bins = 10, color="black") +
+  facet_grid(money~liquid) +
+  xlab("Response Times (ms)") + ylab("Count") +
+  ggtitle("Histogram of RT by conditions")
+p.RT.hist.1
+```
+
+\newpage
+# Error Rate by Monetary Reward
+```{r}
+ERR.sum=summarySEwithin2(data=rew.means, measurevar = "meanERR", withinvars = c("money"),
+                        idvar = "subID")
+p.ERR.1<-ggplot(ERR.sum, aes(x=money, y=meanERR)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", fill='darkmagenta', stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=meanERR-se, ymax=meanERR+se), width=.2) +
+  xlab("Monetary Reward") + ylab("Commission Error Rate") +
+  ggtitle("Task Performance Across Money") +
+  coord_cartesian(ylim=c(0,.3)) +
+  scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))
+p.ERR.1
+```
+
+# Error Rate by Liquid Type
+```{r}
+ERR.sum=summarySEwithin2(data=liq.means, measurevar = "meanERR", withinvars = c("liquid"),
+                        idvar = "subID")
+p.ERR.2<-ggplot(ERR.sum, aes(x=liquid, y=meanERR)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", fill='thistle',stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=meanERR-se, ymax=meanERR+se), width=.2) +
+  xlab("Liquid Incentive") + ylab("Commission Error Rate") +
+  ggtitle("Task Performance Across Liquid Type") +
+  coord_cartesian(ylim=c(0,.3)) +
+  scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))
+p.ERR.2
+```
+
+# Error Rate by Monetary Reward and Liquid Type
+```{r}
+ERR.sum=summarySEwithin2(data=incentive9.means, measurevar = "meanERR",
+                        withinvars = c("money","liquid"), idvar = "subID")
+p.ERR.3<-ggplot(ERR.sum, aes(x=liquid, y=meanERR, fill=money)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=meanERR-se, ymax=meanERR+se), width=.2) +
+  xlab("Monetary Reward") + ylab("Commission Error Rate") +
+  #ggtitle("Task Performance Across Money and Liquid Type") +
+  coord_cartesian(ylim=c(0,.3)) +
+  scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="top",
+        strip.text.x = element_text(size = 12))
+p.ERR.3
+
+p.ERR.4<-ggplot(ERR.sum, aes(x=liquid, y=meanERR, fill=money)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=meanERR-se, ymax=meanERR+se), width=.2) +
+  facet_wrap(~money) +
+  xlab("Monetary Reward") + ylab("Commission Error Rate") +
+  #ggtitle("Task Performance Across Money and Liquid Type") +
+  coord_cartesian(ylim=c(0,.3)) +
+  scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="right",
+        strip.text.x = element_text(size = 12))
+p.ERR.4
+```
+
+# Error Rate: GLMM
+Mixed Effects Model of liquid and monetary reward on Error Rate.
+Significant effect of liquid, no significant effect of money, but significant interaction between money and liquid.
+```{r}
+# m.ERR.1 <-lmer(formula = ERR ~ moneyCode*liqCode  + (1+moneyCode|subID),
+#           data = incentive, REML = FALSE)
+m.ERR.1 <-glmer(formula = ERR ~ moneyCode*liqCode  + (1+moneyCode+liqCode|subID),
+          data = incentive, family = binomial, 
+          control=glmerControl(optCtrl=list(maxfun=100000)))
+summary(m.ERR.1)
+
+# Post Hoc
+# Juice vs Neutral
+m.ERR.1.JvN <-glmer(formula = ERR ~ moneyCode*liqCode  + (1+moneyCode+liqCode|subID),
+          data = subset(incentive, liqCode!=-1), family = binomial, 
+          control=glmerControl(optCtrl=list(maxfun=100000)))
+summary(m.ERR.1.JvN)
+# Salt vs Neutral
+m.ERR.1.SvN <-glmer(formula = ERR ~ moneyCode*liqCode  + (1+moneyCode+liqCode|subID),
+          data = subset(incentive, liqCode!=1), family = binomial, 
+          control=glmerControl(optCtrl=list(maxfun=100000)))
+summary(m.ERR.1.SvN)
+# Money effect juice block
+m.ERR.money.juice<-glmer(formula = ERR ~ moneyCode  + (1+moneyCode|subID),
+          data = subset(incentive, liqCode==1), family = binomial, 
+          control=glmerControl(optCtrl=list(maxfun=100000)))
+summary(m.ERR.money.juice)
+# Money effect neutral block
+m.ERR.money.juice<-glmer(formula = ERR ~ moneyCode  + (1+moneyCode|subID),
+          data = subset(incentive, liqCode==0), family = binomial, 
+          control=glmerControl(optCtrl=list(maxfun=100000)))
+summary(m.ERR.money.juice)
+# Money effect saltwater block
+m.ERR.money.juice<-glmer(formula = ERR ~ moneyCode  + (1+moneyCode|subID),
+          data = subset(incentive, liqCode==-1), family = binomial, 
+          control=glmerControl(optCtrl=list(maxfun=100000)))
+summary(m.ERR.money.juice)
+```
+
+\newpage
+# Accuracy by Monetary Reward
+```{r}
+ACC.sum=summarySEwithin2(data=rew.means, measurevar = "meanACC", withinvars = c("money"),
+                        idvar = "subID")
+p.ACC.1<-ggplot(ACC.sum, aes(x=money, y=meanACC)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", fill='darkmagenta', stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=meanACC-se, ymax=meanACC+se), width=.2) +
+  xlab("Monetary Reward") + ylab("Accuracy") +
+  ggtitle("Task Performance Across Money") +
+  coord_cartesian(ylim=c(.8,1)) +
+  scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))
+p.ACC.1
+```
+
+# Accuracy by Liquid Type
+```{r}
+ACC.sum=summarySEwithin2(data=liq.means, measurevar = "meanACC", withinvars = c("liquid"),
+                        idvar = "subID")
+p.ACC.2<-ggplot(ACC.sum, aes(x=liquid, y=meanACC)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", fill='thistle',stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=meanACC-se, ymax=meanACC+se), width=.2) +
+  xlab("Liquid Incentive") + ylab("Accuracy") +
+  ggtitle("Task Performance Across Liquid Type") +
+  coord_cartesian(ylim=c(.8,1)) +
+  scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))
+p.ACC.2
+```
+
+# Accuracy by Monetary Reward and Liquid Type
+```{r}
+ACC.sum=summarySEwithin2(data=incentive9.means, measurevar = "meanACC",
+                        withinvars = c("money","liquid"), idvar = "subID")
+p.ACC.3<-ggplot(ACC.sum, aes(x=liquid, y=meanACC, fill=money)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=meanACC-se, ymax=meanACC+se), width=.2) +
+  xlab("Monetary Reward") + ylab("Accuracy") +
+  ggtitle("Task Performance Across Money and Liquid Type") +
+  coord_cartesian(ylim=c(.8,1)) +
+  scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="top",
+        strip.text.x = element_text(size = 12))
+p.ACC.3
+
+p.ACC.4<-ggplot(ACC.sum, aes(x=liquid, y=meanACC, fill=money)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=meanACC-se, ymax=meanACC+se), width=.2) +
+  facet_wrap(~money) +
+  xlab("Monetary Reward") + ylab("Accuracy") +
+  ggtitle("Task Performance Across Money and Liquid Type") +
+  coord_cartesian(ylim=c(.8,1)) +
+  scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        #axis.text=element_text(size=14),
+        legend.position="top",
+        strip.text.x = element_text(size = 12))
+p.ACC.4
+```
+
+# Accuracy: GLMM
+Mixed Effects Model of liquid and monetary reward on Accuracy.
+Significant effect of liquid, no significant effect of money, but significant interaction between money and liquid.
+Same pattern of effects as the Error Rate (no surprise, given that they are related).
+```{r}
+# m.ACC.1 <-lmer(formula = ACC ~ liqCode*moneyCode  + (1+moneyCode|subID),
+#           data = incentive, REML = FALSE)
+m.ACC.1 <-glmer(formula = ACC ~ liqCode*moneyCode + (1+moneyCode+liqCode|subID),
+          data = incentive, family=binomial)
+summary(m.ACC.1)
+sjp.glmer(fit = m.ACC.1,type="fe")
+sjp.glmer(fit = m.ACC.1, y.offset = .4)
+sjp.glmer(fit = m.ACC.1, type = "ri.slope", facet.grid = FALSE,
+          vars="liqCode")
+```
+
+# Logistic Regression for each subject
+unique(incentive$subID)
+2  3  4  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 23 24 25 26 27 28 29 30 31 32 33 35 36
+37 38 39 40 41 42 43 44 45 46 47 48 49 50 51
+Juice vs Neutral
+```{r}
+m.RR.sub2<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==2),
+               family=binomial)
+summary(m.RR.sub2)
+
+m.RR.sub3<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==3),
+               family=binomial)
+summary(m.RR.sub3)
+
+m.RR.sub4<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==4),
+                family = binomial)
+summary(m.RR.sub4) # marginally significant money
+
+m.RR.sub6<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==6),
+                family = binomial)
+summary(m.RR.sub6) # marginally significant liquid
+
+m.RR.sub7<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==7),
+                family = binomial)
+summary(m.RR.sub7) # significant liquid
+
+m.RR.sub8<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==8),
+                family = binomial)
+summary(m.RR.sub8)
+
+m.RR.sub9<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==9),
+                family = binomial)
+summary(m.RR.sub9)
+
+m.RR.sub10<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==10),
+                family = binomial)
+summary(m.RR.sub10) # marginally significant liquid (negative beta)
+
+m.RR.sub11<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==11),
+                family = binomial)
+summary(m.RR.sub11) # marginally significant money
+
+m.RR.sub12<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==12),
+                family = binomial)
+summary(m.RR.sub12)
+
+m.RR.sub13<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==13),
+                family = binomial)
+summary(m.RR.sub13)
+
+m.RR.sub14<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==14),
+                family = binomial)
+summary(m.RR.sub14)
+
+m.RR.sub15<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==15),
+                family = binomial)
+summary(m.RR.sub15)
+
+m.RR.sub16<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==16),
+                family = binomial)
+summary(m.RR.sub16) # significant money
+
+m.RR.sub17<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==17),
+                family = binomial)
+summary(m.RR.sub17)
+
+m.RR.sub18<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==18),
+                family = binomial)
+summary(m.RR.sub18)
+
+m.RR.sub19<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==19),
+                family = binomial)
+summary(m.RR.sub19)
+
+m.RR.sub20<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==20),
+                family = binomial)
+summary(m.RR.sub20) # significant money, liquid, and interaction
+
+m.RR.sub21<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==21),
+                family = binomial)
+summary(m.RR.sub21) # significant money effect
+
+m.RR.sub23<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==23),
+                family = binomial)
+summary(m.RR.sub23) # significant money effect
+
+m.RR.sub24<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==24),
+                family = binomial)
+summary(m.RR.sub24) # marginally significant interaction
+
+m.RR.sub25<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==25),
+                family = binomial)
+summary(m.RR.sub25)
+
+m.RR.sub26<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==26),
+                family = binomial)
+summary(m.RR.sub26) # significant liquid effect
+
+m.RR.sub27<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==27),
+                family = binomial)
+summary(m.RR.sub27)
+
+m.RR.sub28<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==28),
+                family = binomial)
+summary(m.RR.sub28) # marginally significant liquid effect
+
+m.RR.sub29<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==29),
+                family = binomial)
+summary(m.RR.sub29) # marginally sig money, significant liquid effect
+
+m.RR.sub30<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==30),
+                family = binomial)
+summary(m.RR.sub30) # significant money effect
+
+m.RR.sub31<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==31),
+                family = binomial)
+summary(m.RR.sub31) # significant interaction
+
+m.RR.sub32<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==32),
+                family = binomial)
+summary(m.RR.sub32) # significant money effect
+
+m.RR.sub33<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==33),
+                family = binomial)
+summary(m.RR.sub33) # significant juice effect
+
+m.RR.sub35<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==35),
+                family = binomial)
+summary(m.RR.sub35)
+
+m.RR.sub36<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==36),
+                family = binomial)
+summary(m.RR.sub36)
+
+m.RR.sub37<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==37),
+                family = binomial)
+summary(m.RR.sub37)
+
+m.RR.sub38<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==38),
+                family = binomial)
+summary(m.RR.sub38)
+
+m.RR.sub39<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==39),
+                family = binomial)
+summary(m.RR.sub39) # marginally significant juice effect
+
+m.RR.sub40<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==40),
+                family = binomial)
+summary(m.RR.sub40)
+
+m.RR.sub41<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==41),
+                family = binomial)
+summary(m.RR.sub41) # significant money
+
+m.RR.sub42<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==42),
+                family = binomial)
+summary(m.RR.sub42)
+
+m.RR.sub43<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==43),
+                family = binomial)
+summary(m.RR.sub43)
+
+m.RR.sub44<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==44),
+                family = binomial)
+summary(m.RR.sub44)
+
+m.RR.sub45<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==45),
+                family = binomial)
+summary(m.RR.sub45) # significant money
+
+m.RR.sub46<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==46),
+                family = binomial)
+summary(m.RR.sub46)
+
+m.RR.sub47<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==47),
+                family = binomial)
+summary(m.RR.sub47) # marginally significant money
+
+m.RR.sub48<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==48),
+                family = binomial)
+summary(m.RR.sub48) # significant moneyxliquid interaction
+
+m.RR.sub49<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==49),
+                family = binomial)
+summary(m.RR.sub49)
+
+m.RR.sub50<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==50),
+                family = binomial())
+summary(m.RR.sub50) # sig money
+
+m.RR.sub51<-glm(formula = subRewarded ~ moneyCode*liqCodeJvN, data = subset(incentive,subID==51),
+                family = binomial())
+summary(m.RR.sub51) # sig money
+```
+
+Saltwater vs Neutral
+```{r}
+
+m.RR.sub2<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==2),
+               family=binomial)
+summary(m.RR.sub2)
+
+m.RR.sub3<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==3),
+               family=binomial)
+summary(m.RR.sub3)
+
+m.RR.sub4<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==4),
+                family = binomial)
+summary(m.RR.sub4) # marginally significant money
+
+m.RR.sub6<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==6),
+                family = binomial)
+summary(m.RR.sub6)
+
+m.RR.sub7<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==7),
+                family = binomial)
+summary(m.RR.sub7)
+
+m.RR.sub8<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==8),
+                family = binomial)
+summary(m.RR.sub8)
+
+m.RR.sub9<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==9),
+                family = binomial)
+summary(m.RR.sub9) # significant liquid
+
+m.RR.sub10<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==10),
+                family = binomial)
+summary(m.RR.sub10)
+
+m.RR.sub11<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==11),
+                family = binomial)
+summary(m.RR.sub11) # marginally significant money
+
+m.RR.sub12<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==12),
+                family = binomial)
+summary(m.RR.sub12)
+
+m.RR.sub13<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==13),
+                family = binomial)
+summary(m.RR.sub13)
+
+m.RR.sub14<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==14),
+                family = binomial)
+summary(m.RR.sub14)
+
+m.RR.sub15<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==15),
+                family = binomial)
+summary(m.RR.sub15)
+
+m.RR.sub16<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==16),
+                family = binomial)
+summary(m.RR.sub16) # significant money, significant interaction
+
+m.RR.sub17<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==17),
+                family = binomial)
+summary(m.RR.sub17)
+
+m.RR.sub18<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==18),
+                family = binomial)
+summary(m.RR.sub18)
+
+m.RR.sub19<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==19),
+                family = binomial)
+summary(m.RR.sub19)
+
+m.RR.sub20<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==20),
+                family = binomial)
+summary(m.RR.sub20) # significant money
+
+m.RR.sub21<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==21),
+                family = binomial)
+summary(m.RR.sub21) # significant money effect
+
+m.RR.sub23<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==23),
+                family = binomial)
+summary(m.RR.sub23) # significant money effect, SIGNIFICANT liquid effect
+
+m.RR.sub24<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==24),
+                family = binomial)
+summary(m.RR.sub24)
+
+m.RR.sub25<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==25),
+                family = binomial)
+summary(m.RR.sub25)
+
+m.RR.sub26<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==26),
+                family = binomial)
+summary(m.RR.sub26)
+
+m.RR.sub27<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==27),
+                family = binomial)
+summary(m.RR.sub27) # marginally significant liquid effect
+
+m.RR.sub28<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==28),
+                family = binomial)
+summary(m.RR.sub28) # marginally significant liquid effect
+
+m.RR.sub29<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==29),
+                family = binomial)
+summary(m.RR.sub29) # marginally sig money, SIGNIFICANT liquid effect
+
+m.RR.sub30<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==30),
+                family = binomial)
+summary(m.RR.sub30) # significant money effect
+
+m.RR.sub31<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==31),
+                family = binomial)
+summary(m.RR.sub31)
+
+m.RR.sub32<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==32),
+                family = binomial)
+summary(m.RR.sub32) # significant money effect, liquid effect, and interaction
+
+m.RR.sub33<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==33),
+                family = binomial)
+summary(m.RR.sub33) # marginally significant money effect
+
+m.RR.sub35<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==35),
+                family = binomial)
+summary(m.RR.sub35) # significant liquid effect
+
+m.RR.sub36<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==36),
+                family = binomial)
+summary(m.RR.sub36)
+
+m.RR.sub37<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==37),
+                family = binomial)
+summary(m.RR.sub37)
+
+m.RR.sub38<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==38),
+                family = binomial)
+summary(m.RR.sub38)
+
+m.RR.sub39<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==39),
+                family = binomial)
+summary(m.RR.sub39)
+
+m.RR.sub40<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==40),
+                family = binomial)
+summary(m.RR.sub40)
+
+m.RR.sub41<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==41),
+                family = binomial)
+summary(m.RR.sub41) # SIGNIFICANT money effect
+
+m.RR.sub42<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==42),
+                family = binomial)
+summary(m.RR.sub42)
+
+m.RR.sub43<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==43),
+                family = binomial)
+summary(m.RR.sub43)
+
+m.RR.sub44<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==44),
+                family = binomial)
+summary(m.RR.sub44)
+
+m.RR.sub45<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==45),
+                family = binomial)
+summary(m.RR.sub45) # marginally significant money and liquid
+
+m.RR.sub46<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==46),
+                family = binomial)
+summary(m.RR.sub46) # significant liquid
+
+m.RR.sub47<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==47),
+                family = binomial)
+summary(m.RR.sub47) # marginally significant money
+
+m.RR.sub48<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==48),
+                family = binomial)
+summary(m.RR.sub48) # marginally significant liquid
+
+m.RR.sub49<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==49),
+                family = binomial)
+summary(m.RR.sub49)
+
+m.RR.sub50<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==50),
+                family = binomial)
+summary(m.RR.sub50) # significant money, SIGNIFICANT liquid, signficant interaction
+
+m.RR.sub51<-glm(formula = subRewarded ~ moneyCode*liqCodeSvN, data = subset(incentive,subID==51),
+                family = binomial)
+summary(m.RR.sub51) # SIGNIFICANT liquid
+```
+
+# Reward Rate Plots Based on Subset of JvN and NvS subjects
+Significant JvN effects: 6 7 10 20 26 28 29 33 39
+```{r}
+# test.sub=35
+# filter(runkey, subID==test.sub)
+# test<-filter(incentive9.means, subID==test.sub)
+# ggplot(data = test, mapping = aes(x = liquid, y = meanRR, fill = money)) +
+#   geom_bar(stat="identity", position=position_dodge())
+
+# Calcuating diference between liquids (3 conditions per subject)
+data.difference<-liq.means %>% 
+  select(subID, liquid, meanRR) %>% 
+  group_by(liquid,subID) %>% 
+  mutate(ind = row_number()) %>%
+  spread(key = liquid, value = meanRR) %>%
+  mutate(JNdiff = juice-neutral, NSdiff = neutral-saltwater)
+
+ggplot(data = data.difference, mapping = aes(x = JNdiff)) +
+  geom_histogram(binwidth = .05) 
+
+ggplot(data = data.difference, mapping = aes(x = NSdiff)) +
+  geom_histogram(binwidth = .05) 
+
+# Calculating difference across liquids for all 9 conditions
+data.difference9<-incentive9.means %>% 
+  select(subID, liquid, money, meanRR) %>% 
+  group_by(liquid,subID) %>% 
+  mutate(ind = row_number()) %>%
+  spread(key = liquid, value = meanRR) %>%
+  mutate(JNdiff = juice-neutral, NSdiff = neutral-saltwater)
+
+ggplot(data = data.difference9, mapping = aes(x = JNdiff,fill=money)) +
+  geom_histogram(binwidth = .05, position="dodge") #+ 
+  # facet_grid(~money)
+
+ggplot(data = data.difference9, mapping = aes(x = NSdiff, fill=money)) +
+  geom_histogram(binwidth = .05,position="dodge") #+ 
+  #facet_grid(~money)
+```
+
+Significant NvS effects: 9 23 27 28 29 32 35 45 46 50 51
+```{r}
+subNvS<-c(9,23,27,28,29,32,35,45,46,50,51)
+data.diff.NvS<-data.difference %>% filter(subID %in% subNvS)
+ggplot(data = data.diff.NvS, mapping = aes(x = NSdiff)) +
+  geom_histogram() 
+```
+
+
+Self Report Ratings
+# exclude subjects: 5, 22, 34
+# Self Report Juice Likert & Intensity Ratings
+```{r}
+# liquids only (from runkey/incentive data)
+selfreport.means <- incentive %>% group_by(subID,liquid) %>%
+  summarise(likert = mean(likert_avg), intensity=mean(intensity_avg))
+selfreport.liq.means <- incentive %>% group_by(liquid) %>%
+  summarise(meanlikert = mean(likert_avg), meanintensity=mean(intensity_avg))
+pandoc.table(selfreport.liq.means)
+
+# plotting the likert ratings for the liquids
+selfreport.sum <- summarySEwithin2(data = selfreport.means, measurevar = "likert",
+                                   withinvars = c("liquid"), idvar = "subID")
+p.likert.1<-ggplot(selfreport.sum, aes(x=liquid, y=likert)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=likert-se, ymax=likert+se), width=.2) +
+  xlab("Liquid") + ylab("Liking Rating (1-7)") +
+  #ggtitle("Self Report Likert Ratings of Liquid Incentives") +
+  coord_cartesian(ylim=c(1,7)) +
+  scale_y_continuous(breaks = c(1:7)) +
+  #scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))
+p.likert.1
+
+# plotting the likert ratings for the liquids
+selfreport.sum <- summarySEwithin2(data = selfreport.means, measurevar = "intensity",
+                                   withinvars = c("liquid"), idvar = "subID")
+p.likert.2<-ggplot(selfreport.sum, aes(x=liquid, y=intensity)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=intensity-se, ymax=intensity+se), width=.2) +
+  xlab("Liquid") + ylab("Intensity Rating (1-7)") +
+  #ggtitle("Self Report Intensity Ratings of Liquid Incentives") +
+  coord_cartesian(ylim=c(1,7)) +
+  scale_y_continuous(breaks = c(1:7)) +
+  #scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="top",
+        strip.text.x = element_text(size = 12))
+p.likert.2
+```
+
+# Plotting the Juice Likert and Intensity Ratings
+```{r}
+grid.arrange(p.likert.1, p.likert.2, ncol = 2)
+```
+
+# Self Report Motivation Rating: "How motivated were you on each trial type?"
+```{r}
+selfreport.motive.means <- selfreport %>% filter(subID!=1 & subID!= 5 & subID!=22 & subID!=34) %>%
+  select(matches("subID|motivetrial")) %>%
+  rename(juice_1_motivetrial = juice1_motivetrial, juice_2_motivetrial = juice2_motivetrial,
+         juice_4_motivetrial = juice4_motivetrial, salt_1_motivetrial = salt1_motivetrial,
+         salt_2_motivetrial = salt2_motivetrial, salt_4_motivetrial = salt4_motivetrial,
+         neut_1_motivetrial = neut1_motivetrial, neut_2_motivetrial = neut2_motivetrial,
+         neut_4_motivetrial = neut4_motivetrial) %>%
+  gather(key = trial, value = motive_rating, juice_1_motivetrial:neut_4_motivetrial) %>%
+  separate(col = trial, into = c("liquid","money","rating"), sep = "_") %>%
+  mutate(money = factor(money, levels = c(1,2,4), labels = c("$","$$","$$$$")),
+        liquid = factor(liquid, levels = c("juice","neut","salt"),
+                        labels = c("juice","neutral","saltwater")),
+        moneyCode = factor(money, levels = c("$","$$","$$$$"), labels = c(-1,0,1)),
+        liqCode = factor(liquid,levels=c("saltwater","neutral","juice"),
+                                       labels=c(-1,0,1)),
+        subID=as.factor(subID))
+selfreport.motive.means$moneyCode <- as.numeric(levels(selfreport.motive.means$moneyCode)[selfreport.motive.means$moneyCode])
+selfreport.motive.means$liqCode <- as.numeric(levels(selfreport.motive.means$liqCode)[selfreport.motive.means$liqCode])
+
+selfreport.sum<-summarySEwithin2(data = selfreport.motive.means, measurevar = "motive_rating",
+                                 withinvars = c("liquid","money"), idvar = "subID")
+p.likert.3 <- ggplot(selfreport.sum, aes(x=liquid, y=motive_rating, fill=money)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=motive_rating-se, ymax=motive_rating+se), width=.2) +
+  xlab("Liquid") + ylab("Motivation Rating") +
+  ggtitle("Motivation Ratings ") +
+  coord_cartesian(ylim=c(1,7)) +
+  scale_y_continuous(breaks = c(1:7)) +
+  #scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="top",
+        strip.text.x = element_text(size = 12))
+p.likert.3
+
+m.likert.1<-lmer(formula = motive_rating ~ liqCode * moneyCode + (1|subID),
+                 data = selfreport.motive.means)
+summary(m.likert.1)
+```
+
+# Self Report Liking Rating: "How much did you like each trial type?"
+```{r}
+selfreport.like.means <- selfreport %>% filter(subID!=1 & subID!= 5 & subID!=22 & subID!=34) %>%
+  select(matches("subID|liketrial")) %>%
+  rename(juice_1_liketrial = juice1_liketrial, juice_2_liketrial = juice2_liketrial,
+         juice_4_liketrial = juice4_liketrial, salt_1_liketrial = salt1_liketrial,
+         salt_2_liketrial = salt2_liketrial, salt_4_liketrial = salt4_liketrial,
+         neut_1_liketrial = neut1_liketrial, neut_2_liketrial = neut2_liketrial,
+         neut_4_liketrial = neut4_liketrial) %>%
+  gather(key = trial, value = like_rating, juice_1_liketrial:neut_4_liketrial) %>%
+  separate(col = trial, into = c("liquid","money","rating"), sep = "_") %>%
+  mutate(money = factor(money, levels = c(1,2,4), labels = c("$","$$","$$$$")),
+         liquid = factor(liquid, levels = c("juice","neut","salt"),
+                        labels = c("juice","neutral","saltwater")),
+         moneyCode = factor(money, levels = c("$","$$","$$$$"), labels = c(-1,0,1)),
+         liqCode = factor(liquid,levels=c("saltwater","neutral","juice"),
+                                       labels=c(-1,0,1)),
+         subID=as.factor(subID))
+selfreport.like.means$moneyCode <- as.numeric(levels(selfreport.like.means$moneyCode)
+                                              [selfreport.like.means$moneyCode])
+selfreport.like.means$liqCode <- as.numeric(levels(selfreport.like.means$liqCode)
+                                              [selfreport.like.means$liqCode])
+
+selfreport.sum<-summarySEwithin2(data = selfreport.like.means, measurevar = "like_rating",
+                                 withinvars = c("liquid","money"), idvar = "subID")
+p.likert.4 <- ggplot(selfreport.sum, aes(x=liquid, y=like_rating, fill=money)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=like_rating-se, ymax=like_rating+se), width=.2) +
+  xlab("Liquid") + ylab("Liking Rating") +
+  ggtitle("Liking Ratings") +
+  coord_cartesian(ylim=c(1,7)) +
+  scale_y_continuous(breaks = c(1:7)) +
+  #scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="top",
+        strip.text.x = element_text(size = 12))
+#p.likert.4
+
+m.likert.2<-lmer(formula = like_rating ~ liqCode * moneyCode + (1|subID),
+                 data = selfreport.like.means)
+summary(m.likert.2)
+```
+
+# Self Report Performance Rating: "How well did you perform on each trial type?"
+```{r}
+selfreport.perform.means <- selfreport %>% filter(subID!=1 & subID!= 5 & subID!=22 & subID!=34) %>%
+  select(matches("subID|performtrial")) %>%
+  rename(juice_1_performtrial = juice1_performtrial, juice_2_performtrial = juice2_performtrial,
+         juice_4_performtrial = juice4_performtrial, salt_1_performtrial = salt1_performtrial,
+         salt_2_performtrial = salt2_performtrial, salt_4_performtrial = salt4_performtrial,
+         neut_1_performtrial = neut1_performtrial, neut_2_performtrial = neut2_performtrial,
+         neut_4_performtrial = neut4_performtrial) %>%
+  gather(key = trial, value = perform_rating, juice_1_performtrial:neut_4_performtrial) %>%
+  separate(col = trial, into = c("liquid","money","rating"), sep = "_") %>%
+  mutate(money = factor(money, levels = c(1,2,4), labels = c("$","$$","$$$$")),
+         liquid = factor(liquid, levels = c("juice","neut","salt"),
+                        labels = c("juice","neutral","saltwater")),
+         moneyCode = factor(money, levels = c("$","$$","$$$$"), labels = c(-1,0,1)),
+         liqCode = factor(liquid,levels=c("saltwater","neutral","juice"),
+                                       labels=c(-1,0,1)),
+         subID=as.factor(subID))
+selfreport.perform.means$moneyCode <- as.numeric(levels(selfreport.perform.means$moneyCode)
+                                              [selfreport.perform.means$moneyCode])
+selfreport.perform.means$liqCode <- as.numeric(levels(selfreport.perform.means$liqCode)
+                                              [selfreport.perform.means$liqCode])
+
+selfreport.sum<-summarySEwithin2(data = selfreport.perform.means, measurevar = "perform_rating",
+                                 withinvars = c("liquid","money"), idvar = "subID")
+p.likert.5 <- ggplot(selfreport.sum, aes(x=liquid, y=perform_rating, fill=money)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), aes(ymin=perform_rating-se, ymax=perform_rating+se), width=.2) +
+  xlab("Liquid") + ylab("Performance Rating") +
+  ggtitle("Performance Ratings ") +
+  coord_cartesian(ylim=c(1,7)) +
+  scale_y_continuous(breaks = c(1:7)) +
+  #scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="top",
+        strip.text.x = element_text(size = 12))
+#p.likert.5
+
+m.likert.3<-lmer(formula = perform_rating ~ liqCode * moneyCode + (1|subID),
+                 data = selfreport.perform.means)
+summary(m.likert.3)
+```
+
+# Plotting all 3 self report ratings next to each other
+```{r}
+g<-grid.arrange(p.likert.3, p.likert.4, p.likert.5, ncol = 3)
+#SBDM only
+ggsave(filename = "motivation_ratings.eps", plot = g, device = "eps", 
+       path = sbdm.path, width = 12, height = 6, scale = .8)
+```
+
+# Mixed Level Models of whether Ratings Predict Performance
+```{r}
+data.selfreport<-selfreport.motive.means %>%
+  right_join(selfreport.like.means, by=c("subID","liquid","money","liqCode","moneyCode")) %>%
+  right_join(selfreport.perform.means, by=c("subID","liquid","money","liqCode","moneyCode")) %>%
+  select(-rating,-rating.x,-rating.y) %>%
+  inner_join(y = incentive9.means, by=c("subID","liquid","money"))
+
+# mixed model: motivation rating
+m.selfreport.1<-lmer(formula = meanRR ~ motive_rating + (1|subID),
+                     data = data.selfreport)
+summary(m.selfreport.1)
+
+# mixed model: liking rating
+m.selfreport.2<-lmer(formula = meanRR ~ like_rating + (1|subID),
+                     data = data.selfreport)
+summary(m.selfreport.2)
+
+# mixed model: perform rating
+# random intercept makes no differnece
+m.selfreport.3<-lmer(formula = meanRR ~ perform_rating + (1|subID),
+                     data = data.selfreport)
+summary(m.selfreport.3)
+
+# mixed model: motivation and liking ratings both in the model
+m.selfreport.4<-lmer(formula = meanRR ~ motive_rating + like_rating + (1|subID), data = data.selfreport)
+summary(m.selfreport.4)
+
+# Hierarchical regression
+# comparing motivation only model to motive+liking: significant
+anova(m.selfreport.1, m.selfreport.4)
+# comparing liking only model to motive+liking: significant
+anova(m.selfreport.2, m.selfreport.4)
+
+# correlation between motivation and liking ratings is very high.
+cor.test(data.selfreport$motive_rating, data.selfreport$like_rating)
+```
+
+Hierarchical regression of experimental and self-report ratings
+# Evaluation whether motivation ratings add unique predictive variance over and above the task
+```{r}
+data.selfreport.full <- incentive %>%
+  inner_join(y = selfreport.motive.means, by = c("subID","liquid","money","moneyCode","liqCode")) %>%
+  inner_join(y = selfreport.like.means, by = c("subID","liquid","money","moneyCode","liqCode")) %>%
+  inner_join(y = selfreport.perform.means, by = c("subID","liquid","money","moneyCode","liqCode"))
+
+# Experimental Effects
+m.selfreport.5<-glmer(formula = subRewarded ~ moneyCode*liqCode + (1+moneyCode+liqCode|subID),
+                     data = data.selfreport.full, family="binomial")
+summary(m.selfreport.5)
+
+# Experimental Effects + motivation ratings
+m.selfreport.6<-glmer(formula = subRewarded ~ moneyCode*liqCode + motive_rating
+                     + (1+moneyCode+liqCode|subID),
+                     data = data.selfreport.full, family="binomial")
+summary(m.selfreport.6)
+
+# Experimental Effects + liking ratings
+m.selfreport.7<-glmer(formula = subRewarded ~ moneyCode*liqCode + like_rating
+                     + (1+moneyCode+liqCode|subID),
+                     data = data.selfreport.full, family="binomial")
+summary(m.selfreport.7)
+
+# Experimental Effects + performance ratings
+m.selfreport.8<-glmer(formula = subRewarded ~ moneyCode*liqCode + perform_rating
+                     + (1+moneyCode+liqCode|subID),
+                     data = data.selfreport.full, family="binomial")
+summary(m.selfreport.8)
+
+# Experimental Effects + motivation ratings + liking ratings
+m.selfreport.9<-glmer(formula = subRewarded ~ moneyCode*liqCode + motive_rating
+                     + like_rating + (1+moneyCode+liqCode|subID),
+                     data = data.selfreport.full, family="binomial")
+summary(m.selfreport.9)
+
+# Experimental Effects + motivation + liking + performance ratings
+m.selfreport.10<-glmer(formula = subRewarded ~ moneyCode*liqCode + perform_rating
+                     + like_rating + motive_rating + (1+moneyCode+liqCode|subID),
+                     data = data.selfreport.full, family="binomial")
+summary(m.selfreport.10)
+
+# Level 1: experiment effects
+# Level 2: experiment + motivation ratings
+# Level 3: experiment + motivation + liking ratings
+anova(m.selfreport.5, m.selfreport.6, m.selfreport.9)
+
+# Level 1: experiment effects
+# Level 2: experiment + liking ratings
+# Level 3: experiment + liking + motivating ratings
+anova(m.selfreport.5, m.selfreport.7, m.selfreport.9)
+```
+
+## SBDM Poster
+```{r}
+# SBDM path
+#sbdm.path="/Users/debbieyee/Documents/Conferences/2018/SBDM/Figures/"
+# ggsave(filename = "Likert_liking_juice.eps", plot = p.likert.1, device = "eps", 
+#        path = sbdm.path, width = 4, height = 5, scale = 1)
+# ggsave(filename = "Likert_intensity_juice.eps", plot = p.likert.2, device = "eps", 
+#        path = sbdm.path, width = 4, height = 5, scale = 1)
+# ggsave(filename = "RR_motivation_money.eps", plot = p.RR.1, device = "eps", 
+#        path = sbdm.path, width = 4, height = 5, scale = 1)
+# ggsave(filename = "RR_motivation_liquid.eps", plot = p.RR.2, device = "eps", 
+#        path = sbdm.path, width = 4, height = 5, scale = 1)
+# ggsave(filename = "RR_motivation9conditions.eps", plot = p.RR.3, device = "eps", 
+#        path = sbdm.path, width = 6, height = 5, scale = 1)
+# ggsave(filename = "RT_motivation9conditions.eps", plot = p.RT.4, device = "eps", 
+#        path = sbdm.path, width = 10, height = 5, scale = 1)
+# ggsave(filename = "ERR_motivation9conditions.eps", plot = p.ERR.4, device = "eps", 
+#        path = sbdm.path, width = 10, height = 5, scale = 1)
+```
+
+
