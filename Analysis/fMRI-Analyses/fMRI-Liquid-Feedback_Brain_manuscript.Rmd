@@ -1,0 +1,2371 @@
+---
+title: "fMRI Motivational Incentive Integration Brain Analyses"
+author: "Debbie Yee"
+date: "4/9/2020"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+editor_options: 
+  chunk_output_type: console
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment = NA)
+
+# library(rstudioapi) 
+# Use this code below to set the directory to the same directly as the Rmd file (useful for debugging)
+# NOTE: that this cannot be uncommented when Knitting, will throw an error
+# setwd(dirname(getActiveDocumentContext()$path)) 
+```
+
+# Data Formatting and Scrubbing
+## Packages
+```{r packages, warnings=FALSE, message=FALSE, include=FALSE}
+# Packages
+library(oro.nifti)    # for reading (and writing) NIfTIs
+library(fields)       # for add.image function
+library(WRS2)         # robust stats (trimse function)
+library(dplyr)        # data manipulation R package
+library(tidyr)        # data manipulation R package
+#library(stringr)
+#library(broom.mixed)
+library(ggplot2)
+library(ggpmisc)
+library(afex)
+library(sjPlot)
+library(knitr)
+library(kableExtra)
+library(formattable)
+library(RColorBrewer)
+library(here)
+library(bmlm)
+library(bayesplot)
+library(mediation)
+library(formattable)
+source("../../Analysis/helper-functions/summarySEwithin2.R")
+```
+
+## Data Directories
+```{r directories, include=FALSE}
+# NOTE: the consolidate betas (long form), and the underlays and ROI masks should be in the same directory. 
+# If this isn't true, then update the path below for the underlay.
+#data.path.betas<-here("Data/fMRI/SubjectData_Consolidated/")
+data.path.betas<-"../../Data/fMRI/SubjectData_Consolidated/"
+
+# behavioral data
+#data.path.behavior<-here("/Data/Behavioral/Trimmed/subject_data.txt")
+#runkey.path<-here("/Data/Behavioral/Trimmed/runkey.csv")
+#selfreport.path<-here("/Data/Redcap/LF_selfreport.csv")
+data.path.behavior<-"../../Data/Behavioral/Trimmed/subject_data.txt"
+runkey.path<-"../../Data/Behavioral/Trimmed/runkey.csv"
+selfreport.path<-"../../Data/Redcap/LF_selfreport.csv"
+
+# output directories
+#out.path<-here("/Analysis/fMRI-Analyses/")
+#figure.path<-here("Analysis/fMRI-Analyses/Figures")
+out.path<-"../../Analysis/fMRI-Analyses/"
+figure.path<-"../../Analysis/fMRI-Analyses/Figures/"
+```
+
+## Setting Subject IDs and Parameters
+```{r subjects, include=FALSE}
+# ======== Subject IDs and Task Conditions ================
+sub.ids<- c(02,04,06,07,08,09,10,11,12,13,14,15,16,17,18,19,20,21,23,24,25,26,27,28,29,
+            30,31,32,33,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51)
+sub.exclude<-c(1,3,5,22,34) # subject exclusions
+taskBLOCK<-c("BASE","SALT","NEUT","JUICE")
+taskEVENTS<-c("Juice_1","Juice_2","Juice_4","Neutral_1","Neutral_2","Neutral_4",
+              "Saltwater_1","Saltwater_2","Saltwater_4")
+
+# ========setting underlay and mask + id-keys================
+# parcel masks (same dimension as under.img) and label files (names for each parcel number)
+#fname.ROI.img<-paste0(data.path,"schaefer_LF_fMRIPrep_400_7Network.nii.gz")
+#ROI.img <- readNIfTI(fname.ROI.img, reorient=FALSE)
+
+# parcel.ids Schaefer
+fname.p.key<-paste0(data.path.betas,"Schaefer2018_400Parcels_7Networks_order.txt")
+p.key.sch<-read.delim(fname.p.key,header=F)  
+
+fname.p.key.sub<-paste0(data.path.betas,"Subcortical_Order_Key.csv")
+p.key.sub<-read.csv(fname.p.key.sub,header=T)  
+
+# ========setting tent colors and misc parameters================
+colors.TENT<-c("firebrick1","firebrick3","firebrick4",
+               "seagreen1","seagreen3","seagreen4",
+               "steelblue1","steelblue3","steelblue4")
+colors.BLOCK<-c("firebrick4","seagreen4","steelblue4")
+
+# fillers for start and end points of the tent functions
+filler.start<-data.frame(tentplot=rep(0,9),condition=taskEVENTS,value_mean=0,value_se=0)
+filler.end<-data.frame(tentplot=rep(12,9),condition=taskEVENTS,value_mean=0,value_se=0)
+
+# TR windows (in tents) for the cue, target, and feedback
+TR_cue = c(2,3)
+TR_target = c(4,6)
+TR_feedback = c(7,9)
+
+# ======== Stats Thresholds================
+total_parcels = length(p.key.sch$V1) + length(p.key.sub$parcel.id)
+thres_bonferroni = (.05/total_parcels)
+thres_05 = .05
+thres_01 = .01
+```
+
+## Read in Block and EV betas
+```{r betas, warning=FALSE, inlclude=TRUE}
+# Schaefer Parcels (400)
+betas.block.sch<-read.csv(file = paste0(data.path.betas,"betas_block_schaefer_long.csv")) %>% 
+  dplyr::select(-X) %>%
+  mutate(Liquid=factor(block, levels = c("BASE","JUICE","NEUT","SALT"), 
+                       labels = c("Baseline","Juice","Neutral","Saltwater")))
+betas.ev.sch<-read.csv(file = paste0(data.path.betas,"betas_ev_schaefer_long.csv")) %>% 
+  dplyr::select(-X) %>%
+  separate(col = condition, into = c("Liquid","Reward"), sep = "_", remove = FALSE) %>%
+  mutate(tentplot = tent+1, AllvsNoReward=ifelse(Liquid=="Noreward", yes = "NoReward", no = "Reward"))
+
+# Subcortical Parcels (19)
+betas.block.sub<-read.csv(file = paste0(data.path.betas,"betas_block_subcortical_long.csv")) %>% 
+  dplyr::select(-X) %>%
+  mutate(Liquid=factor(block, levels = c("BASE","JUICE","NEUT","SALT"), 
+                       labels = c("Baseline","Juice","Neutral","Saltwater")))
+betas.ev.sub<-read.csv(file = paste0(data.path.betas,"betas_ev_subcortical_long.csv")) %>% 
+  dplyr::select(-X) %>%
+  separate(col = condition, into = c("Liquid","Reward"), sep = "_", remove = FALSE) %>%
+  mutate(tentplot = tent+1, AllvsNoReward=ifelse(Liquid=="Noreward", yes = "NoReward", no = "Reward"))
+
+```
+
+## Read in the behavioral & self-report data, format/average data based on relevant conditions 
+```{r paths, warning=FALSE, message=FALSE, include = TRUE}
+#data.beta.block<-read.csv(paste0(data.path.betas,"betas_block.csv")) %>% select(-X)
+#data.beta.EV<-read.csv(paste0(data.path.betas,"betas_EV.csv")) %>% select(-X)
+data.behavior <- tbl_df(read.delim(data.path.behavior))
+data.runkey <- tbl_df(read.csv(runkey.path))
+data.selfreport<-tbl_df(read.csv(selfreport.path))
+
+# BASELINE subject data (filter using data pipeline from dplyr)
+base <- filter(data.behavior,runType=="baseline") %>%
+  dplyr::select(subID,runID,runType,trial,RT,ACC,switch_trial,task,congruency) %>%
+  mutate(ERR=ifelse(ACC==0,1,0))
+
+base.means <- base %>% group_by(subID) %>% 
+  summarise(n=n(), meanACC = mean(ACC, na.rm=TRUE), seACC = sd(ACC, na.rm=TRUE)/sqrt(n-1),
+            meanERR = mean(ERR, na.rm=TRUE), seERR = sd(ERR,na.rm=TRUE)/sqrt(n-1))
+baseRT.means <- base %>% group_by(subID) %>% filter(ACC==1) %>%
+  summarise(n=n(), meanRT = mean(RT), seRT = sd(RT)/sqrt(n-1))
+
+# INCENTIVE subject data (filter using data pipeline from dplyr)
+incentive <- data.behavior %>% filter(runType=="incentive" & !is.na(RT)) %>%
+  dplyr::select(subID,runID,runType,trial,RT,ACC,switch_trial,task,congruency,Feedback,
+         moneyreward,money = moneysymbol) %>%
+  inner_join(data.runkey, by=c("subID","runID")) %>%
+  mutate(critRT = critRT, 
+         subRewarded = (RT<critRT & ACC==1)*1,
+         ERR=ifelse(ACC==0,1,0),
+         moneyCode = factor(moneyreward, levels = c(1,2,4), labels = c(-1,0,1)),
+         liqCode = factor(liquid,levels=c("saltwater","neutral","juice"),
+                                       labels=c(-1,0,1)),
+         rankCode = factor(rank,levels=c(1,2,3),labels=c(1,0,-1)),
+         orderCode = factor(rank,levels=c(1,2,3),labels=c(-1,0,1)),
+         liqCodeJvN = factor(liquid,levels=c("saltwater","neutral","juice"),
+                                       labels=c(0,-1,1)),
+         liqCodeSvN = factor(liquid,levels=c("saltwater","neutral","juice"),
+                                       labels=c(-1,1,0)),
+         subID=as.factor(subID)) %>%
+  group_by(subID) %>%
+  mutate(zRT = scale(RT,center = TRUE, scale = TRUE))
+incentive$subID<-as.numeric(levels(incentive$subID))[incentive$subID]
+incentive$moneyCode<-as.numeric(levels(incentive$moneyCode)[incentive$moneyCode])
+incentive$liqCode<-as.numeric(levels(incentive$liqCode)[incentive$liqCode])
+incentive$rankCode<-as.numeric(levels(incentive$rankCode)[incentive$rankCode])
+incentive$orderCode<-as.numeric(levels(incentive$orderCode)[incentive$orderCode])
+incentive$liqCodeJvN<-as.numeric(levels(incentive$liqCodeJvN)[incentive$liqCodeJvN])
+incentive$liqCodeSvN<-as.numeric(levels(incentive$liqCodeSvN)[incentive$liqCodeSvN])
+```
+
+## Summarising the incentive data based on relevant conditions
+```{r summary, warning=FALSE, message=FALSE, include=TRUE}
+# summarise means of incentive data for each subject, across all conditions
+incentive.means <- incentive %>% filter(!subID %in% sub.exclude) %>% group_by(subID) %>% 
+  summarise(n=n(), meanRR = mean(subRewarded, na.rm=TRUE), 
+            seRR = sd(subRewarded, na.rm=TRUE)/sqrt(n-1),
+            meanACC = mean(ACC, na.rm=TRUE), seACC = sd(ACC, na.rm=TRUE)/sqrt(n-1),
+            meanERR = mean(ERR, na.rm=TRUE), seERR = sd(ERR,na.rm=TRUE)/sqrt(n-1))
+incentiveRT.means <- incentive %>% group_by(subID) %>% filter(!subID %in% sub.exclude,ACC==1) %>%
+  summarise(n=n(), meanRT = mean(RT, na.rm=TRUE), seRT = sd(RT)/sqrt(n-1))
+
+# summarise by subject and congruency across all conditions
+incentive.means.cong <- incentive %>% filter(!subID %in% sub.exclude) %>% group_by(subID,congruency) %>% 
+  summarise(n=n(), meanRR = mean(subRewarded, na.rm=TRUE), 
+            seRR = sd(subRewarded, na.rm=TRUE)/sqrt(n-1),
+            meanACC = mean(ACC, na.rm=TRUE), seACC = sd(ACC, na.rm=TRUE)/sqrt(n-1),
+            meanERR = mean(ERR, na.rm=TRUE), seERR = sd(ERR,na.rm=TRUE)/sqrt(n-1))
+incentiveRT.means.cong <- incentive %>% group_by(subID,congruency) %>% filter(!subID %in% sub.exclude,ACC==1) %>%
+  summarise(n=n(), meanRT = mean(RT, na.rm=TRUE), seRT = sd(RT)/sqrt(n-1))
+
+# summarise by subject and switch cost across all conditions
+incentive.means.switch <- incentive %>% filter(!subID %in% sub.exclude, trial!=1) %>% group_by(subID,switch_trial) %>% 
+  summarise(n=n(), meanRR = mean(subRewarded, na.rm=TRUE), 
+            seRR = sd(subRewarded, na.rm=TRUE)/sqrt(n-1),
+            meanACC = mean(ACC, na.rm=TRUE), seACC = sd(ACC, na.rm=TRUE)/sqrt(n-1),
+            meanERR = mean(ERR, na.rm=TRUE), seERR = sd(ERR,na.rm=TRUE)/sqrt(n-1))
+incentiveRT.means.switch <- incentive %>% group_by(subID,switch_trial) %>% filter(!subID %in% sub.exclude,ACC==1,trial!=1) %>%
+  summarise(n=n(), meanRT = mean(RT, na.rm=TRUE), seRT = sd(RT)/sqrt(n-1))
+
+# summarise the means of the incentive data for each subject, grouped by condition
+incentive9RT.means <- incentive %>% filter(!subID %in% sub.exclude) %>% group_by(subID, liquid, money) %>%
+  filter(!is.na(subRewarded), ACC==1) %>% summarise(n=n(), meanRT = mean(RT)) %>%
+  ungroup(liquid) %>% dplyr::rename(Liquid=liquid) %>%
+  mutate(Liquid = factor(Liquid, levels = c("juice","neutral","saltwater"), labels = c("Juice","Neutral","Saltwater")),
+         Reward = as.character(factor(money,levels=c("$","$$","$$$$"),labels=c(1,2,4))),
+         MoneyLabel = factor(x = money, levels = c("$","$$","$$$$"), labels = c("Low", "Med", "High")),
+         moneyCode = as.numeric(as.character(factor(money,levels=c("$","$$","$$$$"),labels=c(-1,0,1)))),
+         liqCode = as.numeric(as.character(factor(Liquid,levels=c("Juice","Neutral","Saltwater"),
+                                                  labels=c(1,0,-1))))) %>%
+  ungroup(subID)
+incentive9.means = incentive %>% filter(!subID %in% sub.exclude, !is.na(subRewarded)) %>% group_by(subID, liquid, money) %>% 
+  summarise(n = n(), meanRR = mean(subRewarded), meanACC = mean(ACC), meanERR = mean(ERR)) %>%
+  ungroup(liquid) %>% dplyr::rename(Liquid=liquid) %>%
+  mutate(Liquid = factor(Liquid, levels = c("juice","neutral","saltwater"), labels = c("Juice","Neutral","Saltwater")),
+         Reward = as.character(factor(money,levels=c("$","$$","$$$$"),labels=c(1,2,4))),
+         MoneyLabel = factor(x = money, levels = c("$","$$","$$$$"), labels = c("Low", "Med", "High")),
+         moneyCode = as.numeric(as.character(factor(money,levels=c("$","$$","$$$$"),labels=c(-1,0,1)))),
+         liqCode = as.numeric(as.character(factor(Liquid,levels=c("Juice","Neutral","Saltwater"),labels=c(1,0,-1))))) %>%
+  ungroup(subID) %>%
+  left_join(incentive9RT.means, by = c("subID","money","Liquid","Reward","MoneyLabel","moneyCode","liqCode"))
+
+# summarise the means of the incentive data for each subject, grouped by congruency and condition
+incentive9RT.means.cong <- incentive %>% filter(!subID %in% sub.exclude) %>% group_by(subID, congruency,liquid, money) %>%
+  filter(!is.na(subRewarded), ACC==1) %>% summarise(n=n(), meanRT = mean(RT)) %>%
+  ungroup(liquid) %>% dplyr::rename(Liquid=liquid) %>%
+  mutate(Liquid = factor(Liquid, levels = c("juice","neutral","saltwater"), labels = c("Juice","Neutral","Saltwater")),
+         Reward = as.character(factor(money,levels=c("$","$$","$$$$"),labels=c(1,2,4))),
+         MoneyLabel = factor(x = money, levels = c("$","$$","$$$$"), labels = c("Low", "Med", "High")),
+         moneycode = as.numeric(as.character(factor(money,levels=c("$","$$","$$$$"),labels=c(-1,0,1)))),
+         liqcode = as.numeric(as.character(factor(Liquid,levels=c("juice","neutral","saltwater"),
+                                                  labels=c(1,0,-1))))) %>%
+  ungroup(subID)
+incentive9.means.cong = incentive %>% filter(!subID %in% sub.exclude, !is.na(subRewarded)) %>% 
+  group_by(subID, congruency, liquid, money) %>% 
+  summarise(n = n(), meanRR = mean(subRewarded), meanACC = mean(ACC), meanERR = mean(ERR)) %>%
+  ungroup(liquid) %>% dplyr::rename(Liquid=liquid) %>%
+  mutate(Liquid = factor(Liquid, levels = c("juice","neutral","saltwater"), labels = c("Juice","Neutral","Saltwater")),
+         Reward = as.character(factor(money,levels=c("$","$$","$$$$"),labels=c(1,2,4))),
+         MoneyLabel = factor(x = money, levels = c("$","$$","$$$$"), labels = c("Low", "Med", "High")),
+         moneyCode = as.numeric(as.character(factor(money,levels=c("$","$$","$$$$"),labels=c(-1,0,1)))),
+         liqCode = as.numeric(as.character(factor(Liquid,levels=c("Juice","Neutral","Saltwater"),labels=c(1,0,-1))))) %>%
+  ungroup(subID) 
+
+# summarise the means of the incentive data for each subject, grouped by switch cost and condition
+incentive9RT.means.switch <- incentive %>% filter(!subID %in% sub.exclude) %>% 
+  group_by(subID, switch_trial,liquid,money) %>%
+  filter(!is.na(subRewarded), ACC==1, trial!=1) %>% summarise(n=n(), meanRT = mean(RT)) %>%
+  ungroup(liquid) %>% dplyr::rename(Liquid=liquid) %>%
+  mutate(Liquid = factor(Liquid, levels = c("juice","neutral","saltwater"), labels = c("Juice","Neutral","Saltwater")),
+         Reward = as.character(factor(money,levels=c("$","$$","$$$$"),labels=c(1,2,4))),
+         MoneyLabel = factor(x = money, levels = c("$","$$","$$$$"), labels = c("Low", "Med", "High")),
+         moneycode = as.numeric(as.character(factor(money,levels=c("$","$$","$$$$"),labels=c(-1,0,1)))),
+         liqcode = as.numeric(as.character(factor(Liquid,levels=c("juice","neutral","saltwater"),
+                                                  labels=c(1,0,-1))))) %>%
+  ungroup(subID)
+incentive9.means.switch = incentive %>% filter(!subID %in% sub.exclude, !is.na(subRewarded), trial!=1) %>% 
+  group_by(subID, switch_trial, liquid, money) %>% 
+  summarise(n = n(), meanRR = mean(subRewarded), meanACC = mean(ACC), meanERR = mean(ERR)) %>%
+  ungroup(liquid) %>% dplyr::rename(Liquid=liquid) %>%
+  mutate(Liquid = factor(Liquid, levels = c("juice","neutral","saltwater"), labels = c("Juice","Neutral","Saltwater")),
+         Reward = as.character(factor(money,levels=c("$","$$","$$$$"),labels=c(1,2,4))),
+         MoneyLabel = factor(x = money, levels = c("$","$$","$$$$"), labels = c("Low", "Med", "High")),
+         moneyCode = as.numeric(as.character(factor(money,levels=c("$","$$","$$$$"),labels=c(-1,0,1)))),
+         liqCode = as.numeric(as.character(factor(Liquid,levels=c("Juice","Neutral","Saltwater"),labels=c(1,0,-1))))) %>%
+  ungroup(subID) 
+
+# summarise the self report data
+# motivation ratings
+selfreport.motivation <- data.selfreport %>% filter(!subID %in% sub.exclude) %>%
+  dplyr::select(subID, juice1_motivetrial,juice2_motivetrial,juice4_motivetrial,
+         neut1_motivetrial,neut2_motivetrial,neut4_motivetrial,
+         salt1_motivetrial,salt2_motivetrial,salt4_motivetrial) %>%
+  gather(key = condition, value = motive_rating, juice1_motivetrial:salt4_motivetrial) %>%
+  separate(col = condition, into = c("condition","misc"), sep="_", remove = TRUE) %>%
+  dplyr::select(-misc) %>%
+  mutate(condition = replace(condition, list = which(condition=="juice1"), values = "Juice_$"),
+         condition = replace(condition, list = which(condition=="juice2"), values = "Juice_$$"),
+         condition = replace(condition, list = which(condition=="juice4"), values = "Juice_$$$$"),
+         condition = replace(condition, list = which(condition=="neut1"), values = "Neutral_$"),
+         condition = replace(condition, list = which(condition=="neut2"), values = "Neutral_$$"),
+         condition = replace(condition, list = which(condition=="neut4"), values = "Neutral_$$$$"),
+         condition = replace(condition, list = which(condition=="salt1"), values = "Saltwater_$"),
+         condition = replace(condition, list = which(condition=="salt2"), values = "Saltwater_$$"),
+         condition = replace(condition, list = which(condition=="salt4"), values = "Saltwater_$$$$")) %>%
+  separate(col = condition, into = c("Liquid","money"), sep = "_") %>%
+  mutate(Reward = as.character(factor(money,levels=c("$","$$","$$$$"),labels=c(1,2,4))))
+# liking ratings
+selfreport.liking <- data.selfreport %>% filter(!subID %in% sub.exclude) %>%
+  dplyr::select(subID, juice1_liketrial,juice2_liketrial,juice4_liketrial,
+         neut1_liketrial,neut2_liketrial,neut4_liketrial,
+         salt1_liketrial,salt2_liketrial,salt4_liketrial) %>%
+  gather(key = condition, value = liking_rating, juice1_liketrial:salt4_liketrial) %>%
+  separate(col = condition, into = c("condition","misc"), sep="_", remove = TRUE) %>%
+  dplyr::select(-misc) %>%
+  mutate(condition = replace(condition, list = which(condition=="juice1"), values = "Juice_$"),
+         condition = replace(condition, list = which(condition=="juice2"), values = "Juice_$$"),
+         condition = replace(condition, list = which(condition=="juice4"), values = "Juice_$$$$"),
+         condition = replace(condition, list = which(condition=="neut1"), values = "Neutral_$"),
+         condition = replace(condition, list = which(condition=="neut2"), values = "Neutral_$$"),
+         condition = replace(condition, list = which(condition=="neut4"), values = "Neutral_$$$$"),
+         condition = replace(condition, list = which(condition=="salt1"), values = "Saltwater_$"),
+         condition = replace(condition, list = which(condition=="salt2"), values = "Saltwater_$$"),
+         condition = replace(condition, list = which(condition=="salt4"), values = "Saltwater_$$$$")) %>%
+  separate(col = condition, into = c("Liquid","money"), sep = "_") %>%
+  mutate(Reward = as.character(factor(money,levels=c("$","$$","$$$$"),labels=c(1,2,4))))
+# performance ratings
+selfreport.perform <- data.selfreport %>% filter(!subID %in% sub.exclude) %>%
+  dplyr::select(subID, juice1_performtrial,juice2_performtrial,juice4_performtrial,
+         neut1_performtrial,neut2_performtrial,neut4_performtrial,
+         salt1_performtrial,salt2_performtrial,salt4_performtrial) %>%
+  gather(key = condition, value = perform_rating, juice1_performtrial:salt4_performtrial) %>%
+  separate(col = condition, into = c("condition","misc"), sep="_", remove = TRUE) %>%
+  dplyr::select(-misc) %>%
+  mutate(condition = replace(condition, list = which(condition=="juice1"), values = "Juice_$"),
+         condition = replace(condition, list = which(condition=="juice2"), values = "Juice_$$"),
+         condition = replace(condition, list = which(condition=="juice4"), values = "Juice_$$$$"),
+         condition = replace(condition, list = which(condition=="neut1"), values = "Neutral_$"),
+         condition = replace(condition, list = which(condition=="neut2"), values = "Neutral_$$"),
+         condition = replace(condition, list = which(condition=="neut4"), values = "Neutral_$$$$"),
+         condition = replace(condition, list = which(condition=="salt1"), values = "Saltwater_$"),
+         condition = replace(condition, list = which(condition=="salt2"), values = "Saltwater_$$"),
+         condition = replace(condition, list = which(condition=="salt4"), values = "Saltwater_$$$$")) %>%
+  separate(col = condition, into = c("Liquid","money"), sep = "_") %>%
+  mutate(Reward = as.character(factor(money,levels=c("$","$$","$$$$"),labels=c(1,2,4))))
+```
+
+## Summarising Bundled Beta Values in dorsal anterior cingulate cortex 
+```{r dACC-summary, warning=FALSE}
+#'dACC' parcel ids from the incentive integration analyses
+parcels.dACC<-c(107,110,108,311,312) 
+
+# Looping over 'dACC' parcels and create data frame of combining effects from both parcels
+for (pid in parcels.dACC) { # pid<-108
+  # subset data for each parcel
+  # blocked/sustained effects data 
+  tmp.block <- betas.block.sch %>% filter(Liquid!="Baseline", parcel.id==pid) %>%
+    dplyr::rename(value.block = value) %>%
+    mutate(Liquid = as.character(Liquid))
+  
+  # bundled effects & behavioral data for cue related activity
+  tmp <- betas.ev.sch %>% filter(condition!="Noreward", parcel.id==pid, 
+                                    (tentplot>=TR_cue[1] & tentplot<=TR_cue[2])) %>%
+    group_by(subID,Liquid,Reward) %>%
+    dplyr::summarise(mean_value = mean(value)) %>% dplyr::rename(mean_value.ev = mean_value) %>%
+    mutate(liqCode = as.numeric(as.character(factor(Liquid,levels=c("Saltwater","Neutral","Juice"),labels=c(-1,0,1)))),
+           moneyCode = as.numeric(as.character(factor(Reward,levels=c("1","2","4"),labels=c(-1,0,1))))) %>%
+    left_join(y = tmp.block, by = c("subID","Liquid")) %>%
+    mutate(value.bundle = mean_value.ev + value.block) %>%
+    inner_join(y = incentive9.means, by = c("subID","Liquid","Reward","liqCode","moneyCode")) %>%
+    inner_join(y = selfreport.motivation, by = c("subID","Liquid","Reward","money")) %>%
+    inner_join(y = selfreport.liking, by = c("subID","Liquid","Reward","money")) %>%
+    inner_join(y = selfreport.perform, by = c("subID","Liquid","Reward","money"))
+  #tmp$liqCode <- as.numeric(levels(tmp$liqCode)[tmp$liqCode])
+  #tmp$moneyCode <- as.numeric(levels(tmp$moneyCode)[tmp$moneyCode])
+  
+  if (pid == parcels.dACC[1])  {
+    data.dACC<-tmp
+  } else {
+    data.dACC<- rbind(data.dACC,tmp)
+  }
+}
+
+# Summarise the bundled values by Reward Rate across the parcels 107, 108, 110, 311, 312
+data.dACC.sum <- data.dACC %>% group_by(subID, Liquid, Reward) %>%
+  summarise(value.block = mean(value.block),
+            value.ev = mean(mean_value.ev),
+            value.bundle.mean = mean(value.bundle), 
+            meanRR = mean(meanRR),
+            meanERR = mean(meanRR), 
+            meanACC = mean(meanACC),
+            meanRT = mean(meanRT), meanRTlog = log(meanRT),
+            motive_rating = mean(motive_rating), liking_rating = mean(liking_rating),
+            liqCode = mean(liqCode), moneyCode = mean(moneyCode)) %>%
+  ungroup(Liquid,Reward) %>% group_by(subID) %>%
+  mutate(MoneyLabel = factor(x = Reward, levels = c(1,2,4), labels = c("Low", "Med", "High")),
+         mot9Code = liqCode + moneyCode, 
+         meanRR.normed = scale(meanRR, center = TRUE, scale = TRUE),
+         meanRR.centered = scale(meanRR, center = TRUE, scale = FALSE),
+         motive_rating.normed = scale(motive_rating, center = TRUE, scale = TRUE),
+         motive_rating.centered = scale(motive_rating, center = TRUE, scale = FALSE),
+         value.bundle.mean.normed = scale(value.bundle.mean, center = TRUE, scale = TRUE),
+         value.bundle.mean.centered = scale(value.bundle.mean, center = TRUE, scale = TRUE),
+         value.bundle.mean.mot9 = value.bundle.mean*mot9Code,
+         meanRR.mot9 = meanRR*mot9Code,
+         motive_rating.mot9 = motive_rating*mot9Code) %>%
+  unite(col = "Incentive9", Liquid:Reward, sep="_", remove = FALSE)
+data.dACC.sum$motive_rating.normed[is.nan(data.dACC.sum$motive_rating.normed)]<-0
+
+# Summarise by subject
+data.dACC.sum.sub <- data.dACC %>% group_by(subID) %>%
+  summarise(value.block = mean(value.block),
+            value.ev = mean(mean_value.ev),
+            value.bundle.mean = mean(value.bundle), 
+            meanRR = mean(meanRR), 
+            meanERR = mean(meanRR), meanACC = mean(meanACC),
+            motive_rating = mean(motive_rating), liking_rating = mean(liking_rating),
+            liqCode = mean(liqCode), moneyCode = mean(moneyCode)) %>%
+  #ungroup(Liquid,Reward) %>% group_by(subID) %>%
+  mutate(meanRR.normed = scale(meanRR, center = TRUE, scale = TRUE),
+         motive_rating.normed = scale(motive_rating, center = TRUE, scale = TRUE),
+         value.bundle.mean.normed = scale(value.bundle.mean, center = TRUE, scale = TRUE))
+
+```
+
+## Summarising Bundled Beta Values in Ventromedial PFC
+```{r vmpfc-summary, warning=FALSE}
+#'vmpfc' parcel ids from the incentive integration analyses
+#parcels.vmpfc<-c(169,379) 
+parcels.vmpfc<-c(168, 169, 173, 174, 379, 380, 381, 382)
+
+# Looping over 'vmpfc' parcels and create data frame of combining effects from both parcels
+for (pid in parcels.vmpfc) { # pid<-169
+  # subset data for each parcel
+  # blocked/sustained effects data 
+  tmp.block <- betas.block.sch %>% filter(Liquid!="Baseline", parcel.id==pid) %>%
+    dplyr::rename(value.block = value) %>%
+    mutate(Liquid = as.character(Liquid))
+  
+  # bundled effects & behavioral data for cue related activity
+  tmp <- betas.ev.sch %>% filter(condition!="Noreward", parcel.id==pid, 
+                                    (tentplot>=TR_cue[1] & tentplot<=TR_cue[2])) %>%
+    group_by(subID,Liquid,Reward) %>%
+    summarise(mean_value = mean(value)) %>% dplyr::rename(mean_value.ev = mean_value) %>%
+    mutate(liqCode = as.numeric(as.character(factor(Liquid,levels=c("Saltwater","Neutral","Juice"),labels=c(-1,0,1)))),
+           moneyCode = as.numeric(as.character(factor(Reward,levels=c("1","2","4"),labels=c(-1,0,1))))) %>%
+    left_join(y = tmp.block, by = c("subID","Liquid")) %>%
+    mutate(value.bundle = mean_value.ev + value.block) %>%
+    inner_join(y = incentive9.means, by = c("subID","Liquid","Reward","liqCode","moneyCode")) %>%
+    inner_join(y = selfreport.motivation, by = c("subID","Liquid","Reward","money")) %>%
+    inner_join(y = selfreport.liking, by = c("subID","Liquid","Reward","money")) %>%
+    inner_join(y = selfreport.perform, by = c("subID","Liquid","Reward","money"))
+  #tmp$liqCode <- as.numeric(levels(tmp$liqCode)[tmp$liqCode])
+  #tmp$moneyCode <- as.numeric(levels(tmp$moneyCode)[tmp$moneyCode])
+  
+  if (pid == parcels.vmpfc[1])  {
+    data.vmpfc<-tmp
+  } else {
+    data.vmpfc<- rbind(data.vmpfc,tmp)
+  }
+}
+
+# Summarise the bundled values across the vmpfc parcels 169 and 379
+data.vmpfc.sum <- data.vmpfc %>% group_by(subID, Liquid, Reward) %>%
+  summarise(value.bundle.mean = mean(value.bundle), meanRR = mean(meanRR), 
+            meanERR = mean(meanRR), meanACC = mean(meanACC),
+            motive_rating = mean(motive_rating), liking_rating = mean(liking_rating),
+            liqCode = mean(liqCode), moneyCode = mean(moneyCode)) %>%
+  ungroup(Liquid,Reward) %>% group_by(subID) %>%
+  mutate(mot9Code = liqCode + moneyCode, 
+         meanRR.normed = scale(meanRR, center = TRUE, scale = TRUE),
+         meanRR.centered = scale(meanRR, center = TRUE, scale = FALSE),
+         motive_rating.normed = scale(motive_rating, center = TRUE, scale = TRUE),
+         motive_rating.centered = scale(motive_rating, center = TRUE, scale = FALSE),
+         value.bundle.mean.normed = scale(value.bundle.mean, center = TRUE, scale = TRUE),
+         value.bundle.mean.centered = scale(value.bundle.mean, center = TRUE, scale = TRUE),
+         value.bundle.mean.mot9 = value.bundle.mean*mot9Code,
+         meanRR.mot9 = meanRR*mot9Code,
+         motive_rating.mot9 = motive_rating*mot9Code)
+data.vmpfc.sum$motive_rating.normed[is.nan(data.vmpfc.sum$motive_rating.normed)]<-0
+
+# Summarise by subject
+data.vmpfc.sum.sub <- data.vmpfc %>% group_by(subID) %>%
+  summarise(value.bundle.mean = mean(value.bundle), meanRR = mean(meanRR), 
+            meanERR = mean(meanRR), meanACC = mean(meanACC),
+            motive_rating = mean(motive_rating), liking_rating = mean(liking_rating),
+            liqCode = mean(liqCode), moneyCode = mean(moneyCode)) %>%
+  #ungroup(Liquid,Reward) %>% group_by(subID) %>%
+  mutate(meanRR.normed = scale(meanRR, center = TRUE, scale = TRUE),
+         motive_rating.normed = scale(motive_rating, center = TRUE, scale = TRUE),
+         value.bundle.mean.normed = scale(value.bundle.mean, center = TRUE, scale = TRUE))
+```
+
+## Summarising Bundled Beta Values in Nucleus Accumbens
+```{r accumbens-summary, warning=FALSE}
+# 'accumbens' parcel ids from the incentive integration analyses
+parcels.accumbens<-c(350,351) 
+
+# Looping over 'vmpfc' parcels and create data frame of combining effects from both parcels
+for (pid in parcels.accumbens) { # pid<-350
+  # subset data for each parcel
+  # blocked/sustained effects data 
+  tmp.block <- betas.block.sub %>% filter(Liquid!="Baseline", parcel.id==pid) %>%
+    dplyr::rename(value.block = value) %>%
+    mutate(Liquid = as.character(Liquid))
+  
+  # bundled effects & behavioral data for cue related activity
+  tmp <- betas.ev.sub %>% filter(condition!="Noreward", parcel.id==pid, 
+                                    (tentplot>=TR_cue[1] & tentplot<=TR_cue[2])) %>%
+    group_by(subID,Liquid,Reward) %>%
+    summarise(mean_value = mean(value)) %>% dplyr::rename(mean_value.ev = mean_value) %>%
+    mutate(liqCode = as.numeric(as.character(factor(Liquid,levels=c("Saltwater","Neutral","Juice"),labels=c(-1,0,1)))),
+           moneyCode = as.numeric(as.character(factor(Reward,levels=c("1","2","4"),labels=c(-1,0,1))))) %>%
+    left_join(y = tmp.block, by = c("subID","Liquid")) %>%
+    mutate(value.bundle = mean_value.ev + value.block) %>%
+    inner_join(y = incentive9.means, by = c("subID","Liquid","Reward","liqCode","moneyCode")) %>%
+    inner_join(y = selfreport.motivation, by = c("subID","Liquid","Reward","money")) %>%
+    inner_join(y = selfreport.liking, by = c("subID","Liquid","Reward","money")) %>%
+    inner_join(y = selfreport.perform, by = c("subID","Liquid","Reward","money"))
+  #tmp$liqCode <- as.numeric(levels(tmp$liqCode)[tmp$liqCode])
+  #tmp$moneyCode <- as.numeric(levels(tmp$moneyCode)[tmp$moneyCode])
+  
+  if (pid == parcels.accumbens[1])  {
+    data.accumbens<-tmp
+  } else {
+    data.accumbens<- rbind(data.accumbens,tmp)
+  }
+  
+}
+
+# Summarise the bundled values across the accumbens parcels 350 and 351
+data.accumbens.sum <- data.accumbens %>% group_by(subID, Liquid, Reward) %>%
+  summarise(value.bundle.mean = mean(value.bundle), meanRR = mean(meanRR), 
+            meanERR = mean(meanRR), meanACC = mean(meanACC),
+            motive_rating = mean(motive_rating), liking_rating = mean(liking_rating),
+            liqCode = mean(liqCode), moneyCode = mean(moneyCode)) %>%
+  ungroup(Liquid,Reward) %>% group_by(subID) %>%
+  mutate(mot9Code = liqCode + moneyCode, 
+         meanRR.normed = scale(meanRR, center = TRUE, scale = TRUE),
+         meanRR.centered = scale(meanRR, center = TRUE, scale = FALSE),
+         motive_rating.normed = scale(motive_rating, center = TRUE, scale = TRUE),
+         motive_rating.centered = scale(motive_rating, center = TRUE, scale = FALSE),
+         value.bundle.mean.normed = scale(value.bundle.mean, center = TRUE, scale = TRUE),
+         value.bundle.mean.centered = scale(value.bundle.mean, center = TRUE, scale = TRUE),
+         value.bundle.mean.mot9 = value.bundle.mean*mot9Code,
+         meanRR.mot9 = meanRR*mot9Code,
+         motive_rating.mot9 = motive_rating*mot9Code)
+data.accumbens.sum$motive_rating.normed[is.nan(data.accumbens.sum$motive_rating.normed)]<-0
+  
+
+# Summarise by subject
+data.accumbens.sum.sub <- data.accumbens %>% group_by(subID) %>%
+  summarise(value.bundle.mean = mean(value.bundle), meanRR = mean(meanRR), 
+            meanERR = mean(meanRR), meanACC = mean(meanACC),
+            motive_rating = mean(motive_rating), liking_rating = mean(liking_rating),
+            liqCode = mean(liqCode), moneyCode = mean(moneyCode)) %>%
+  #ungroup(Liquid,Reward) %>% group_by(subID) %>%
+  mutate(meanRR.normed = scale(meanRR, center = TRUE, scale = TRUE),
+         motive_rating.normed = scale(motive_rating, center = TRUE, scale = TRUE),
+         value.bundle.mean.normed = scale(value.bundle.mean, center = TRUE, scale = TRUE))
+```
+
+## Summarising Bundled Beta Values in Caudate
+```{r caudate-summary, warning=FALSE}
+# caudate parcel ids from the incentive integration analyses
+parcels.caudate<-c(355,356) 
+
+# Looping over 'caudate' parcels and create data frame of combining effects from both parcels
+for (pid in parcels.caudate) { # pid<-355
+  # subset data for each parcel
+  # blocked/sustained effects data 
+  tmp.block <- betas.block.sub %>% filter(Liquid!="Baseline", parcel.id==pid) %>%
+    dplyr::rename(value.block = value) %>%
+    mutate(Liquid = as.character(Liquid))
+  
+  # bundled effects & behavioral data for cue related activity
+  tmp <- betas.ev.sub %>% filter(condition!="Noreward", parcel.id==pid, 
+                                    (tentplot>=TR_cue[1] & tentplot<=TR_cue[2])) %>%
+    group_by(subID,Liquid,Reward) %>%
+    summarise(mean_value = mean(value)) %>% dplyr::rename(mean_value.ev = mean_value) %>%
+    mutate(liqCode = as.numeric(as.character(factor(Liquid,levels=c("Saltwater","Neutral","Juice"),labels=c(-1,0,1)))),
+           moneyCode = as.numeric(as.character(factor(Reward,levels=c("1","2","4"),labels=c(-1,0,1))))) %>%
+    left_join(y = tmp.block, by = c("subID","Liquid")) %>%
+    mutate(value.bundle = mean_value.ev + value.block) %>%
+    inner_join(y = incentive9.means, by = c("subID","Liquid","Reward","liqCode","moneyCode")) %>%
+    inner_join(y = selfreport.motivation, by = c("subID","Liquid","Reward","money")) %>%
+    inner_join(y = selfreport.liking, by = c("subID","Liquid","Reward","money")) %>%
+    inner_join(y = selfreport.perform, by = c("subID","Liquid","Reward","money"))
+  #tmp$liqCode <- as.numeric(levels(tmp$liqCode)[tmp$liqCode])
+  #tmp$moneyCode <- as.numeric(levels(tmp$moneyCode)[tmp$moneyCode])
+  
+  if (pid == parcels.caudate[1])  {
+    data.caudate<-tmp
+  } else {
+    data.caudate<- rbind(data.caudate,tmp)
+  }
+  
+}
+
+# Summarise the bundled values across the accumbens parcels 350 and 351
+data.caudate.sum <- data.caudate %>% group_by(subID, Liquid, Reward) %>%
+  summarise(value.bundle.mean = mean(value.bundle), meanRR = mean(meanRR), 
+            meanERR = mean(meanRR), meanACC = mean(meanACC),
+            motive_rating = mean(motive_rating), liking_rating = mean(liking_rating),
+            liqCode = mean(liqCode), moneyCode = mean(moneyCode)) %>%
+  ungroup(Liquid,Reward) %>% group_by(subID) %>%
+mutate(mot9Code = liqCode + moneyCode, 
+         meanRR.normed = scale(meanRR, center = TRUE, scale = TRUE),
+         meanRR.centered = scale(meanRR, center = TRUE, scale = FALSE),
+         motive_rating.normed = scale(motive_rating, center = TRUE, scale = TRUE),
+         motive_rating.centered = scale(motive_rating, center = TRUE, scale = FALSE),
+         value.bundle.mean.normed = scale(value.bundle.mean, center = TRUE, scale = TRUE),
+         value.bundle.mean.centered = scale(value.bundle.mean, center = TRUE, scale = TRUE),
+         value.bundle.mean.mot9 = value.bundle.mean*mot9Code,
+         meanRR.mot9 = meanRR*mot9Code,
+         motive_rating.mot9 = motive_rating*mot9Code)
+data.caudate.sum$motive_rating.normed[is.nan(data.caudate.sum$motive_rating.normed)]<-0
+
+
+# Summarise by subject
+data.caudate.sum.sub <- data.caudate %>% group_by(subID) %>%
+  summarise(value.bundle.mean = mean(value.bundle), meanRR = mean(meanRR), 
+            meanERR = mean(meanRR), meanACC = mean(meanACC),
+            motive_rating = mean(motive_rating), liking_rating = mean(liking_rating),
+            liqCode = mean(liqCode), moneyCode = mean(moneyCode)) %>%
+  #ungroup(Liquid,Reward) %>% group_by(subID) %>%
+  mutate(meanRR.normed = scale(meanRR, center = TRUE, scale = TRUE),
+         motive_rating.normed = scale(motive_rating, center = TRUE, scale = TRUE),
+         value.bundle.mean.normed = scale(value.bundle.mean, center = TRUE, scale = TRUE))
+```
+
+## Summarising Bundled Beta Values in Putamen
+```{r putamen-summary, warning=FALSE}
+# 'putamen' parcel ids from the incentive integration analyses
+parcels.putamen<-c(361,362) # putamen
+
+# Looping over 'putamen' parcels and create data frame of combining effects from both parcels
+for (pid in parcels.putamen) { # pid<-361
+  # subset data for each parcel
+  # blocked/sustained effects data 
+  tmp.block <- betas.block.sub %>% filter(Liquid!="Baseline", parcel.id==pid) %>%
+    dplyr::rename(value.block = value) %>%
+    mutate(Liquid = as.character(Liquid))
+  
+  # bundled effects & behavioral data for cue related activity
+  tmp <- betas.ev.sub %>% filter(condition!="Noreward", parcel.id==pid, 
+                                    (tentplot>=TR_cue[1] & tentplot<=TR_cue[2])) %>%
+    group_by(subID,Liquid,Reward) %>%
+    summarise(mean_value = mean(value)) %>% dplyr::rename(mean_value.ev = mean_value) %>%
+    mutate(liqCode = as.numeric(as.character(factor(Liquid,levels=c("Saltwater","Neutral","Juice"),labels=c(-1,0,1)))),
+           moneyCode = as.numeric(as.character(factor(Reward,levels=c("1","2","4"),labels=c(-1,0,1))))) %>%
+    left_join(y = tmp.block, by = c("subID","Liquid")) %>%
+    mutate(value.bundle = mean_value.ev + value.block) %>%
+    inner_join(y = incentive9.means, by = c("subID","Liquid","Reward","liqCode","moneyCode")) %>%
+    inner_join(y = selfreport.motivation, by = c("subID","Liquid","Reward","money")) %>%
+    inner_join(y = selfreport.liking, by = c("subID","Liquid","Reward","money")) %>%
+    inner_join(y = selfreport.perform, by = c("subID","Liquid","Reward","money"))
+  #tmp$liqCode <- as.numeric(levels(tmp$liqCode)[tmp$liqCode])
+  #tmp$moneyCode <- as.numeric(levels(tmp$moneyCode)[tmp$moneyCode])
+  
+  if (pid == parcels.putamen[1])  {
+    data.putamen<-tmp
+  } else {
+    data.putamen<- rbind(data.putamen,tmp)
+  }
+  
+}
+
+# Summarise the bundled values across the accumbens parcels 350 and 351
+data.putamen.sum <- data.putamen %>% group_by(subID, Liquid, Reward) %>%
+  summarise(value.bundle.mean = mean(value.bundle), meanRR = mean(meanRR), 
+            meanERR = mean(meanRR), meanACC = mean(meanACC),
+            motive_rating = mean(motive_rating), liking_rating = mean(liking_rating),
+            liqCode = mean(liqCode), moneyCode = mean(moneyCode)) %>%
+  ungroup(Liquid,Reward) %>% group_by(subID) %>%
+  mutate(mot9Code = liqCode + moneyCode, 
+         meanRR.normed = scale(meanRR, center = TRUE, scale = TRUE),
+         meanRR.centered = scale(meanRR, center = TRUE, scale = FALSE),
+         motive_rating.normed = scale(motive_rating, center = TRUE, scale = TRUE),
+         motive_rating.centered = scale(motive_rating, center = TRUE, scale = FALSE),
+         value.bundle.mean.normed = scale(value.bundle.mean, center = TRUE, scale = TRUE),
+         value.bundle.mean.centered = scale(value.bundle.mean, center = TRUE, scale = TRUE),
+         value.bundle.mean.mot9 = value.bundle.mean*mot9Code,
+         meanRR.mot9 = meanRR*mot9Code,
+         motive_rating.mot9 = motive_rating*mot9Code)
+data.putamen.sum$motive_rating.normed[is.nan(data.putamen.sum$motive_rating.normed)]<-0
+
+# Summarise by subject
+data.putamen.sum.sub <- data.putamen %>% group_by(subID) %>%
+  summarise(value.bundle.mean = mean(value.bundle), meanRR = mean(meanRR), 
+            meanERR = mean(meanRR), meanACC = mean(meanACC),
+            motive_rating = mean(motive_rating), liking_rating = mean(liking_rating),
+            liqCode = mean(liqCode), moneyCode = mean(moneyCode)) %>%
+  #ungroup(Liquid,Reward) %>% group_by(subID) %>%
+  mutate(meanRR.normed = scale(meanRR, center = TRUE, scale = TRUE),
+         motive_rating.normed = scale(motive_rating, center = TRUE, scale = TRUE),
+         value.bundle.mean.normed = scale(value.bundle.mean, center = TRUE, scale = TRUE))
+```
+
+## Summarising Bundled Beta Values in Anterior Insula
+```{r insula-summary, warning=FALSE}
+# 'anterior insula' parcel ids from the incentive integration analyses
+parcels.insula<-c(99,101,143,306,340) # bilateral insula
+#parcels.insula_left<-c(99,101,143) # left insula
+#parcels.insula_right<-c(306,340) # right insula
+#insula_hemispheres<-c("left","right")
+
+# Looping over 'insula' parcels and create data frame of combining effects from both parcels
+for (pid in parcels.insula) { # pid<-361
+  # subset data for each parcel
+  # blocked/sustained effects data 
+  tmp.block <- betas.block.sch %>% filter(Liquid!="Baseline", parcel.id==pid) %>%
+    dplyr::rename(value.block = value) %>%
+    mutate(Liquid = as.character(Liquid))
+  
+  # bundled effects & behavioral data for cue related activity
+  tmp <- betas.ev.sch %>% filter(condition!="Noreward", parcel.id==pid, 
+                                    (tentplot>=TR_cue[1] & tentplot<=TR_cue[2])) %>%
+    group_by(subID,Liquid,Reward) %>%
+    summarise(mean_value = mean(value)) %>% dplyr::rename(mean_value.ev = mean_value) %>%
+    mutate(liqCode = as.numeric(as.character(factor(Liquid,levels=c("Saltwater","Neutral","Juice"),labels=c(-1,0,1)))),
+           moneyCode = as.numeric(as.character(factor(Reward,levels=c("1","2","4"),labels=c(-1,0,1))))) %>%
+    left_join(y = tmp.block, by = c("subID","Liquid")) %>%
+    mutate(value.bundle = mean_value.ev + value.block) %>%
+    inner_join(y = incentive9.means, by = c("subID","Liquid","Reward","liqCode","moneyCode")) %>%
+    inner_join(y = selfreport.motivation, by = c("subID","Liquid","Reward","money")) %>%
+    inner_join(y = selfreport.liking, by = c("subID","Liquid","Reward","money")) %>%
+    inner_join(y = selfreport.perform, by = c("subID","Liquid","Reward","money"))
+  #tmp$liqCode <- as.numeric(levels(tmp$liqCode)[tmp$liqCode])
+  #tmp$moneyCode <- as.numeric(levels(tmp$moneyCode)[tmp$moneyCode])
+  
+  if (pid == parcels.insula[1])  {
+    data.insula<-tmp
+  } else {
+    data.insula<- rbind(data.insula,tmp)
+  }
+  
+}
+
+# Summarise the bundled values across the accumbens parcels 350 and 351
+data.insula.sum <- data.insula %>% group_by(subID, Liquid, Reward) %>%
+  summarise(value.bundle.mean = mean(value.bundle), meanRR = mean(meanRR), 
+            meanERR = mean(meanRR), meanACC = mean(meanACC),
+            motive_rating = mean(motive_rating), liking_rating = mean(liking_rating),
+            liqCode = mean(liqCode), moneyCode = mean(moneyCode)) %>%
+  ungroup(Liquid,Reward) %>% group_by(subID) %>%
+  mutate(mot9Code = liqCode + moneyCode, 
+         meanRR.normed = scale(meanRR, center = TRUE, scale = TRUE),
+         meanRR.centered = scale(meanRR, center = TRUE, scale = FALSE),
+         motive_rating.normed = scale(motive_rating, center = TRUE, scale = TRUE),
+         motive_rating.centered = scale(motive_rating, center = TRUE, scale = FALSE),
+         value.bundle.mean.normed = scale(value.bundle.mean, center = TRUE, scale = TRUE),
+         value.bundle.mean.centered = scale(value.bundle.mean, center = TRUE, scale = TRUE),
+         value.bundle.mean.mot9 = value.bundle.mean*mot9Code,
+         meanRR.mot9 = meanRR*mot9Code,
+         motive_rating.mot9 = motive_rating*mot9Code)
+data.insula.sum$motive_rating.normed[is.nan(data.insula.sum$motive_rating.normed)]<-0
+
+# Summarise by subject
+data.insula.sum.sub <- data.insula %>% group_by(subID) %>%
+  summarise(value.bundle.mean = mean(value.bundle), meanRR = mean(meanRR), 
+            meanERR = mean(meanRR), meanACC = mean(meanACC),
+            motive_rating = mean(motive_rating), liking_rating = mean(liking_rating),
+            liqCode = mean(liqCode), moneyCode = mean(moneyCode)) %>%
+  #ungroup(Liquid,Reward) %>% group_by(subID) %>%
+  mutate(meanRR.normed = scale(meanRR, center = TRUE, scale = TRUE),
+         motive_rating.normed = scale(motive_rating, center = TRUE, scale = TRUE),
+         value.bundle.mean.normed = scale(value.bundle.mean, center = TRUE, scale = TRUE))
+```
+
+
+# Behavioral Analyses: Motivational Incentive Effects: Cognitive Task Performance and Self Report Measures
+## Binomial Analyses
+```{r}
+binom.test(x = 117, n = 288, p = .05, alternative = "two.sided")
+```
+
+## Reward Rate Effects
+```{r}
+m.RR<-lme4::lmer(formula = meanRR ~ moneyCode * liqCode + (1|subID), 
+                      data = data.dACC.sum)
+
+m.RR.JvN<-lme4::lmer(formula = meanRR ~ moneyCode * liqCode + (1|subID), 
+                      data = data.dACC.sum, subset = Liquid!="Saltwater")
+
+m.RR.SvN<-lme4::lmer(formula = meanRR ~ moneyCode * liqCode + (1|subID), 
+                      data = data.dACC.sum, subset = Liquid!="Juice")
+
+m.RR.complex<-lme4::lmer(formula = meanRR ~ moneyCode * liqCode + (1+moneyCode+liqCode|subID), 
+                      data = data.dACC.sum)
+
+tab_model(m.RR,m.RR.JvN,m.RR.SvN,
+          title = "Reward Rate by Experimental Factors",
+          dv.labels = c("Reward Rate (Simple)","Juice v. Neutral","Saltwater v. Neutral"),
+          pred.labels = c("Intercept","Money", "Liquid"),
+          show.re.var = TRUE, show.stat = TRUE, show.icc = FALSE)
+
+tab_model(m.RR,m.RR.complex,
+          title = "Reward Rate by Experimental Factors",
+          dv.labels = c("Reward Rate (Simple)","Reward Rate (Complex)"),
+          pred.labels = c("Intercept","Money", "Liquid"),
+          show.re.var = TRUE, show.stat = TRUE, show.icc = FALSE)
+```
+
+# RT and Accuracy
+```{r}
+m.RT<-lme4::lmer(formula = meanRT ~ moneyCode * liqCode + (1|subID), 
+                      data = data.dACC.sum)
+m.ACC<-lme4::lmer(formula = meanACC ~ moneyCode * liqCode + (1|subID), 
+                      data = data.dACC.sum)
+m.ACC.JvS<-lme4::lmer(formula = meanACC ~ moneyCode * liqCode + (1|subID), 
+                      data = data.dACC.sum,subset = Liquid!="Neutral")
+tab_model(m.RT, m.ACC,m.ACC.JvS,
+          show.re.var = TRUE, show.stat = TRUE, show.icc = FALSE)
+```
+
+# Supplemental Table 2
+```{r}
+tab_model(m.RT, m.ACC, 
+          dv.labels = c("Response Time","Accuracy"),
+          pred.labels = c("Intercept","Money", "Liquid","Money * Liquid"),
+          show.re.var = FALSE, show.stat = TRUE, show.icc = FALSE, show.ci = FALSE)
+```
+
+
+## Multiple Regression Between Reward Rate and Motivation Ratings
+```{r}
+m.motive<-lme4::lmer(formula = motive_rating ~ moneyCode + liqCode + (1+moneyCode+liqCode|subID), 
+                      data = data.dACC.sum)
+
+m.RR.motive<-lme4::lmer(formula = meanRR ~ moneyCode + liqCode + motive_rating + (1+moneyCode+liqCode+motive_rating|subID), 
+                      data = data.dACC.sum)
+
+tab_model(m.motive,m.RR.motive,
+          title = "Hierarchical Regression with Motivation Ratings",
+          dv.labels = c("Motivation Ratings","Reward Rate"),
+          pred.labels = c("Intercept","Money", "Liquid","Motivation Ratings"),
+          show.re.var = FALSE, show.stat = TRUE, show.icc = FALSE)
+```
+
+## Hierarchical Regression with Reward Rate and Motivation Ratings
+```{r}
+anova(m.RR,m.RR.motive)
+```
+
+## Reward Rate by Motivation Ratings By Subject (Scatterplot)
+```{r}
+# Reward Rate by Self Report Motivation Ratings by Subject
+# RColorBrewer::brewer.pal(8, "Set1") # to get the hex colors for set 1
+cor.RR.motive<-cor.test(x = data.dACC.sum.sub$motive_rating.normed, y = data.dACC.sum.sub$meanRR.normed)
+Rsquared=round(cor.RR.motive$estimate^2,3)
+textlab1 <- paste("R^2 == ", Rsquared)
+textlab2 <- paste("t(44)= ",round(cor.RR.motive$statistic,3),", p = ",round(cor.RR.motive$p.value,2), sep="")
+
+p.linecolor<-brewer.pal(n=8, name = 'Set1')
+p.RR.motive.bysub<-ggplot(data = data.dACC.sum.sub, aes(x = motive_rating.normed, y = meanRR.normed)) +
+  geom_point(size = 2) +
+  geom_smooth(method="lm", se = TRUE, col = p.linecolor[2]) +
+  annotate("text", x = .15, y = -2.0, label = textlab1, color=p.linecolor[2], size = 4, parse=TRUE, hjust=0) +
+  annotate("text", x = .15, y = -2.3, label = textlab2, color=p.linecolor[2], size = 4, parse=FALSE, hjust=0) +
+  xlab("Self-Report Motivation Ratings") + ylab("Reward Rate") +
+  #ggtitle("Average Values by Subject") +
+  scale_color_brewer(palette="Set1") +
+  theme_classic() + 
+  theme(panel.grid.minor=element_blank(),
+        plot.background = element_rect(fill = "transparent",colour = NA),
+        rect = element_rect(fill = "transparent"),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=16),
+        legend.position="none",
+        strip.text.x = element_text(size = 16))
+p.RR.motive.bysub
+
+# tmp.x<-coef(m.RR.motive)$subID[1]
+# tmp.y<-coef(m.RR.motive)$subID[4]
+# plot(x = tmp.x$`(Intercept)`, y = tmp.y$motive_rating)
+```
+
+## Reward Rate by Motivation Ratings by Monetary Reward and Liquid (Scatterplot)
+```{r}
+#p.linecolor<-brewer.pal(n=9, name = "Spectral")
+p.RR.motive<-ggplot(data = data.dACC.sum, 
+                            aes(x = motive_rating.normed, y = meanRR.normed, color=Liquid)) +
+  geom_point(size = 2) +
+  stat_smooth(method="glm", se = FALSE) +
+  facet_grid(.~MoneyLabel) +
+  #annotate("text", x = .35, y = -2.0, label = textlab1, color=p.linecolor[4], size = 5, parse=FALSE, hjust=0) +
+  #annotate("text", x = .35, y = -2.3, label = textlab2, color=p.linecolor[4], size = 5, parse=FALSE, hjust=0) +
+  labs(x = "Self Report Motivation Ratings", y = "Reward Rate", color = "Liquid") +
+  scale_color_brewer(palette="Set2") +
+  #scale_color_manual(labels = c("$", "$$","$$$$")) +
+  theme_bw() + 
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=14,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="right",
+        legend.title = element_text(size = 14, face = "bold"),
+        legend.text = element_text(size=14),
+        strip.text.x = element_text(size = 14)) 
+p.RR.motive
+
+#p.RR.motive + guides(color=guide_legend("my awesome title"))
+
+```
+
+## Motivation Ratings by Monetary Reward and Liquid (Barplot)
+```{r}
+RR.sum=summarySEwithin2(data=data.dACC.sum, measurevar = "motive_rating",
+                        withinvars = c("Liquid","MoneyLabel"), idvar = "subID")
+p.RR.motive.bar<-ggplot(data = RR.sum, aes(x = MoneyLabel, y = motive_rating, fill=Liquid)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), 
+                aes(ymin=motive_rating-se, ymax=motive_rating+se), width=.2) +
+  xlab("Money") + ylab("Self-Report Motivation Ratings") +
+  labs(fill = "Liquid") +
+  #geom_hline(yintercept = .4, linetype="dashed") +
+  scale_fill_brewer(palette="Set2") +
+  coord_cartesian(ylim=c(1,7)) +
+  #scale_fill_discrete(name="Monetary Reward") +
+  theme_classic() +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=14,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="right",
+        legend.title=element_text(size=14, face = "bold"),
+        legend.text = element_text(size=14),
+        strip.text.x = element_text(size = 12))
+p.RR.motive.bar
+```
+
+
+## Reward Rate by Monetary Reward and Liquid (Barplot)
+```{r}
+RR.sum=summarySEwithin2(data=data.dACC.sum, measurevar = "meanRR",
+                        withinvars = c("Liquid","MoneyLabel"), idvar = "subID")
+p.RR.mot9<-ggplot(RR.sum, aes(x=MoneyLabel, y=meanRR, fill=Liquid)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", 
+           stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), 
+                aes(ymin=meanRR-se, ymax=meanRR+se), width=.2) +
+  xlab("Money") + ylab("Reward Rate") +
+  labs(fill = "Liquid") +
+  geom_hline(yintercept = .4, linetype="dashed") +
+  scale_fill_brewer(palette="Set2") +
+  coord_cartesian(ylim=c(.5,.75)) +
+  #scale_fill_discrete(name="Monetary Reward") +
+  theme_classic() +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=14,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        legend.title=element_text(size=14, face = "bold"),
+        legend.text = element_text(size=14),
+        strip.text.x = element_text(size = 12))
+p.RR.mot9
+
+```
+
+## Plotting Figure 1
+```{r}
+p.figure1<-cowplot::plot_grid(p.RR.mot9, p.RR.motive.bar, p.RR.motive.bysub,
+                              label_size = 16, ncol = 3, rel_widths = c(1,1.2,1))
+p.figure1
+
+#labels = c("B","C")
+ggsave(filename = "Figure1.eps", plot = p.figure1, 
+       device="eps", dpi = 300,
+       path = figure.path, width = 12, height = 3, scale = 1.2)
+```
+
+# Supplementary Figure S1
+```{r}
+RT.sum=summarySEwithin2(data=data.dACC.sum, measurevar = "meanRT",
+                        withinvars = c("Liquid","MoneyLabel"), idvar = "subID")
+p.RT.mot9<-ggplot(RT.sum, aes(x=MoneyLabel, y=meanRT, fill=Liquid)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", 
+           stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), 
+                aes(ymin=meanRT-se, ymax=meanRT+se), width=.2) +
+  xlab("Money") + ylab("Response Time (ms)") +
+  labs(fill = "Liquid") +
+  geom_hline(yintercept = .4, linetype="dashed") +
+  scale_fill_brewer(palette="Set2") +
+  coord_cartesian(ylim=c(600,700)) +
+  #scale_fill_discrete(name="Monetary Reward") +
+  theme_classic() +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=14,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        legend.title=element_text(size=14, face = "bold"),
+        legend.text = element_text(size=14),
+        strip.text.x = element_text(size = 12))
+p.RT.mot9
+
+ACC.sum=summarySEwithin2(data=data.dACC.sum, measurevar = "meanACC",
+                        withinvars = c("Liquid","MoneyLabel"), idvar = "subID")
+p.ACC.mot9<-ggplot(ACC.sum, aes(x=MoneyLabel, y=meanACC, fill=Liquid)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", 
+           stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), 
+                aes(ymin=meanACC-se, ymax=meanACC+se), width=.2) +
+  xlab("Money") + ylab("Accuracy") +
+  labs(fill = "Liquid") +
+  geom_hline(yintercept = .4, linetype="dashed") +
+  scale_fill_brewer(palette="Set2") +
+  coord_cartesian(ylim=c(.75,1)) +
+  #scale_fill_discrete(name="Monetary Reward") +
+  theme_classic() +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=14,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="right",
+        legend.title=element_text(size=14, face = "bold"),
+        legend.text = element_text(size=14),
+        strip.text.x = element_text(size = 12))
+p.ACC.mot9
+
+p.figure1_sup<-cowplot::plot_grid(p.RT.mot9, p.ACC.mot9,
+                              label_size = 16, ncol = 2, rel_widths = c(1,1.3))
+p.figure1_sup
+ggsave(filename = "Supplemental_Figure1.eps", plot = p.figure1_sup, 
+       device="eps", dpi = 300,
+       path = figure.path, width = 7, height = 3, scale = 1.2)
+```
+
+# ROI Analyses: Dorsal Anterior Cingulate Cortex (dACC)
+
+## Block Beta Values by Liquid in dACC
+```{r}
+m.dACC.RR.block<-lme4::lmer(formula = value.block ~ moneyCode + liqCode + (1|subID), 
+                      data = data.dACC.sum)
+```
+
+## Event-Related Beta Values by Money in dACC
+```{r}
+m.dACC.RR.cue<-lme4::lmer(formula = value.ev ~ moneyCode + liqCode + (1|subID), 
+                      data = data.dACC.sum)
+```
+
+## Bundled Beta Values by Money in dACC
+```{r}
+m.dACC.RR.bundle<-lme4::lmer(formula = value.bundle.mean ~ moneyCode + liqCode + (1|subID), 
+                      data = data.dACC.sum)
+m.dACC.RR.bundle2<-lme4::lmer(formula = value.bundle.mean ~ moneyCode + liqCode + (1|subID), 
+                      data = data.dACC.sum)
+#tab_model(m.dACC.RR.bundle2)
+```
+
+## Table of the Block, Event-Related,and Bundled Models
+```{r}
+tab_model(m.dACC.RR.block,m.dACC.RR.cue, m.dACC.RR.bundle,
+          title = "Dorsal ACC Betas",
+          dv.labels = c("Block Betas", "Event-Related Betas", "Bundled Betas"),
+          pred.labels = c("Intercept","Monetary Reward","Liquid Type"),
+          show.re.var = FALSE, show.stat = TRUE, show.icc = FALSE)
+```
+
+## Figure 2: Plotting Blocked (Liquid) Effects & Cue (Money) Effects
+```{r}
+dACC.block.sum=summarySEwithin2(data = data.dACC.sum, measurevar = "value.block", 
+                 withinvars = "Liquid", idvar = "subID")
+p.figure2.block<-ggplot(data = dACC.block.sum, aes(x = Liquid, y = value.block, fill = Liquid)) +
+  geom_bar(stat = "identity", color="black") +
+  geom_errorbar(position=position_dodge(width=0.8), 
+                aes(ymin=value.block-se, ymax=value.block+se), width=.2) +
+  xlab("Liquid") + ylab("Block Beta Estimates") +
+  labs(fill = "Liquid") +
+  #geom_hline(yintercept = .4, linetype="dashed") +
+  scale_fill_brewer(palette="Set2") +
+  #coord_cartesian(ylim=c(.35,.8)) +
+  #scale_fill_discrete(name="Monetary Reward") +
+  theme_classic()+
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=14,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        legend.title=element_text(size=14, face = "bold"),
+        strip.text.x = element_text(size = 12))
+p.figure2.block
+
+
+dACC.ev.sum=summarySEwithin2(data = data.dACC.sum, measurevar = "value.ev", 
+                 withinvars = c("Liquid","MoneyLabel"), idvar = "subID")
+p.figure2.ev<-ggplot(data = dACC.ev.sum, aes(x = MoneyLabel, y = value.ev, fill = Liquid)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", 
+           stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), 
+                aes(ymin=value.ev-se, ymax=value.ev+se), width=.2) +
+  xlab("Money") + ylab("Cue Beta Estimates") +
+  labs(fill = "Liquid") +
+  #geom_hline(yintercept = .4, linetype="dashed") +
+  scale_fill_brewer(palette="Set2") +
+  #coord_cartesian(ylim=c(.35,.8)) +
+  #scale_fill_discrete(name="Monetary Reward") +
+  theme_classic() +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=14,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="right",
+        legend.title=element_text(size=14, face = "bold"),
+        legend.text = element_text(size=14),
+        strip.text.x = element_text(size = 12))
+p.figure2.ev
+```
+
+## Figure 2: Plotting Bundled Effects
+```{r}
+dACC.bundle.sum=summarySEwithin2(data = data.dACC.sum, measurevar = "value.bundle.mean", 
+                 withinvars = c("Liquid","MoneyLabel"), idvar = "subID")
+p.figure2.bundle<-ggplot(data = dACC.bundle.sum, aes(x = MoneyLabel, y = value.bundle.mean, fill = Liquid)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", 
+           stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), 
+                aes(ymin=value.bundle.mean-se, ymax=value.bundle.mean+se), width=.2) +
+  xlab("Money") + ylab("Bundled Beta Estimates") +
+  labs(fill = "Liquid") +
+  #geom_hline(yintercept = .4, linetype="dashed") +
+  scale_fill_brewer(palette="Set2") +
+  #coord_cartesian(ylim=c(.35,.8)) +
+  #scale_fill_discrete(name="Monetary Reward") +
+  theme_classic() +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=14,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="right",
+        legend.title=element_text(size=14, face = "bold"),
+        legend.text = element_text(size=14),
+        strip.text.x = element_text(size = 12))
+p.figure2.bundle
+```
+
+## Draw Tentzero function of trialwise beta estimates for Figure 2
+```{r}
+#'dACC' parcel ids from the incentive integration analyses
+parcels.dACC<-c(107,110,108,311,312) 
+parcels.vmpfc<-c(168, 169, 173, 174, 379, 380, 381, 382)
+# colors.TENT<-c("firebrick1","firebrick3","firebrick4",
+#                "seagreen1","seagreen3","seagreen4",
+#                "steelblue1","steelblue3","steelblue4")
+colors.TENT<-c("#62c1a3","#3A9276","#1D493B",
+               "#f98c61","#EC4909","#9D3106",
+               "#8B9FCB","#4C69A9","#2C3D63")
+
+data.tentplot<-betas.ev.sch %>% filter(condition!="Noreward", parcel.id %in% parcels.dACC) %>%
+  mutate(time=tentplot*2) %>%
+  group_by(time,Liquid,Reward,condition) %>%
+  #group_by(time,Reward) %>%
+  dplyr::summarise(mean_value = mean(value), .groups = "keep") 
+
+# add zero padding to beginning and end of tent functions
+
+data.tentplot2<-data.tentplot %>% #dplyr::filter(time<=4) %>% 
+  ungroup() %>%
+  add_row(time = c(rep(0,9),rep(24,9)), Liquid = data.tentplot$Liquid[1:18],
+          Reward = data.tentplot$Reward[1:18], condition = data.tentplot$condition[1:18],
+          mean_value=0) %>%
+  mutate(MoneyLabel = factor(x = Reward, levels = c(1,2,4), labels = c("Low", "Med", "High")))
+  
+# data.tentplot<-data.tentplot %>% #dplyr::filter(time<=4) %>% 
+#   ungroup(time) %>%
+#   mutate(time=c(rep(0,9),rep(24,9)), mean_value=0) %>%
+#   bind_rows(data.tentplot) %>%
+#   mutate(MoneyLabel = factor(x = Reward, levels = c(1,2,4), labels = c("Low", "Med", "High")))
+
+p.trialbetas<-ggplot(data = data.tentplot2, mapping = aes(x = time, y = mean_value)) +
+  geom_rect(mapping = aes(xmin=3.5,xmax=6.5,ymin=-.2,ymax=0.4), fill = "#e0e1dd", color = "#e0e1dd") +
+  geom_line(aes(group=Reward, linetype = MoneyLabel, color = condition), size= .9) +
+  #geom_point(aes(group=Reward, color = condition)) +
+  facet_grid(.~Liquid) +
+  scale_color_manual(values=colors.TENT, guide = FALSE) +
+  #geom_text(x=5, y=.4, label="Cue", size = 6) +
+  labs(x = "Time from Cue Onset (ms)", y = "Trial Beta Estimates", linetype = "Money")  +
+  scale_x_continuous(breaks=c(seq(0,24,4)), labels=c(seq(0,24,4)), limits=c(0,24)) +
+  scale_y_continuous(breaks=c(seq(-.2,.5,.2)), labels=c(seq(-.2,.5,.2)), limits=c(-.2,.5)) +
+  theme_classic() +
+  theme(panel.grid.minor=element_blank(),
+        plot.background = element_rect(fill = "transparent",colour = NA),
+        rect = element_rect(fill = "transparent"),
+        #plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=15,face = "bold"),
+        axis.text=element_text(size=16),
+        strip.text.x = element_text(size = 16, face="bold"),
+        legend.title=element_text(size=16,face="bold"),
+        legend.text=element_text(size=12),
+        legend.position="top")
+p.trialbetas
+```
+
+## Save figures for Figure 2
+```{r}
+ggsave(filename = "Figure2_block.eps", plot = p.figure2.block, 
+       device="eps", dpi = 300,
+       path = figure.path, width = 5, height = 3, scale = 1.1)
+
+ggsave(filename = "Figure2_ev.eps", plot = p.figure2.ev, 
+       device="eps", dpi = 300,
+       path = figure.path, width = 7, height = 4, scale = 1.1)
+
+ggsave(filename = "Figure2_bundle.eps", plot = p.figure2.bundle, 
+       device="eps", dpi = 300,
+       path = figure.path, width = 7, height = 4, scale = 1.1)
+
+ggsave(filename = "Figure2_trialbetas.eps", plot = p.trialbetas, 
+       device="eps", dpi = 300,
+       path = figure.path, width = 10, height = 4, scale = 1.1,
+       bg = "transparent")
+```
+
+
+## Bundled Beta Values by Reward Rate in dorsal anterior cingulate cortex (Scatterplot)
+```{r dACC-ROI, warning=FALSE, include=FALSE}
+# # Scatterplot of dACC bundled betas by reward rate
+# p.dACC<-ggplot(data = data.dACC.sum, aes(x = meanRR.normed, y = value.bundle.mean,
+#                                          color = Reward, shape = Reward)) +
+#   geom_point(size = 2) +
+#   geom_smooth(method="lm", se = FALSE) +
+#   facet_grid(.~Liquid) +
+#   xlab("Reward Rate") + ylab("Dorsal ACC Beta Estimates") +
+#   #coord_cartesian(xlim = c(-.2,.2),ylim=c(-.6,.6)) +
+#   #scale_y_continuous(breaks = c(1:7)) +
+#   #scale_fill_discrete(name="Monetary Reward") +
+#   scale_color_brewer(palette="Set1") +
+#   theme_gray() +
+#   theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+#         axis.title=element_text(size=12,face = "bold"),
+#         axis.text=element_text(size=14),
+#         legend.position="top",
+#         strip.text.x = element_text(size = 12))
+# p.dACC
+# # # 
+# # Scatterplot of dACC bundled betas by motivation ratings
+# p.dACC.motive<-ggplot(data = data.dACC.sum, aes(x = motive_rating.centered, y = value.bundle.mean,
+#                                                 color = Reward, shape = Reward)) +
+#   geom_point(size = 2) +
+#   geom_smooth(method="lm", se = FALSE) +
+#   facet_grid(.~Liquid) +
+#   xlab("Self Report Motivation Ratings") + ylab("Dorsal ACC Beta Estimates") +
+#   #coord_cartesian(xlim = c(-.5,.3),ylim=c(-.6,.6)) +
+#   #scale_y_continuous(breaks = c(1:7)) +
+#   #scale_fill_discrete(name="Monetary Reward") +
+#   scale_color_brewer(palette="Set1") +
+#   theme_gray() +
+#   theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+#         axis.title=element_text(size=12,face = "bold"),
+#         axis.text=element_text(size=14),
+#         legend.position="none",
+#         strip.text.x = element_text(size = 12))
+# p.dACC.motive
+
+# 
+# # Save scatterplots
+# ggsave(filename = "dACC_betas-rewardrate.png", plot = p.dACC, 
+#        path = figure.path, device = "png", width = 8, height = 4)
+# ggsave(filename = "dACC_betas-motiveratings.png", plot = p.dACC.motive, 
+#        path = figure.path, device = "png", width = 8, height = 4)
+# # Combined Figure 11
+# p.figure11<-cowplot::plot_grid(p.dACC, p.dACC.motive,
+#                               labels = c("11a","11b"), 
+#                               rel_widths = c(1, 1),
+#                               rel_heights = c(1.15, 1),
+#                               align="v", nrow = 2)
+# p.figure11
+# ggsave(filename = "Figure11.eps", plot = p.figure11, 
+#        device="eps", dpi = 300,
+#        path = figure.path, width = 10, height = 8, scale = 1)
+```
+
+
+## Reward Rate predicted by Bundled Betas
+## Brain-Behavior Associations in dACC (Mixed Effects Model)
+```{r}
+m.dACC.RR<-lme4::lmer(formula = meanRR ~ mot9Code + value.bundle.mean + (1+mot9Code|subID), 
+                      data = data.dACC.sum)
+
+m.dACC.RR.null<-update(m.dACC.RR, formula = ~ . -value.bundle.mean )
+BF_dACC_RR = BIC(m.dACC.RR.null) - BIC(m.dACC.RR)
+# m.dACC.RR2<-lme4::lmer(formula = meanRR ~ mot9Code + value.bundle.mean + (1+mot9Code|subID), 
+#                       data = data.dACC.sum)
+# tab_model(m.dACC.RR,m.dACC.RR2,
+#           show.re.var = FALSE, show.stat = TRUE, show.icc = FALSE)
+```
+
+## Motivation Ratings Predicted by Bundled Betas 
+```{r}
+m.dACC.motive<-lme4::lmer(formula = motive_rating ~ mot9Code + value.bundle.mean + (1+mot9Code|subID), 
+                      data = data.dACC.sum)
+```
+
+## Plotting the Models
+```{r}
+tab_model(m.dACC.RR, m.dACC.motive,
+          title = "Reward Rate by Bundled dACC Betas",
+          dv.labels = c("Reward Rate","Motivation Ratings"),
+          pred.labels = c("Intercept","Incentive Conditions","dACC Bundled Betas"),
+          show.re.var = FALSE, show.stat = TRUE, show.icc = FALSE)
+```
+
+
+# Within-Subjects Mediation Analyses
+x = dACC /newline
+y = Reward Rate /newline
+m = Motivation Ratings newline
+
+## Format the Data for Within-Subjects Mediation Analysis
+```{r}
+data.dACC.mediation <- data.dACC.sum %>% 
+  dplyr::select(subID,meanRR,motive_rating,value.bundle.mean,mot9Code,liqCode,moneyCode)
+```
+
+## Step 0: Motivation Conditions Predict Reward Rate (Y), dACC Betas, and Motivation Ratings
+```{r}
+m.step0.RR<-lme4::lmer(formula = meanRR ~ mot9Code + (1+mot9Code|subID), data = data.dACC.sum)
+m.step0.beta<-lme4::lmer(formula = value.bundle.mean ~ mot9Code + (1+mot9Code|subID), data = data.dACC.sum)
+m.step0.motive<-lme4::lmer(formula = motive_rating ~ mot9Code + (1+mot9Code|subID), data = data.dACC.sum)
+tab_model(m.step0.RR, m.step0.beta, m.step0.motive,
+          dv.labels = c("Reward Rate","dACC Betas", "Motivation Ratings"),
+          pred.labels = c("Intercept","Incentive Conditions"),
+          show.re.var = FALSE, show.stat = TRUE, show.icc = FALSE)
+```
+
+## Step 1: Reward Rate (Y) by dACC Betas (X)
+```{r}
+# m.dACC.step1<-lme4::lmer(formula = meanRR ~ moneyCode + liqCode + (1|subID), 
+#                          data = data.dACC.sum)
+m.dACC.step1<-lme4::lmer(formula = meanRR ~ value.bundle.mean + (1|subID), 
+                          data = data.dACC.sum)
+tab_model(m.dACC.step1)
+```
+
+## Step 2: Motivation Ratings (M) Predicted by dACC Betas
+```{r}
+m.dACC.step2<-lme4::lmer(formula = motive_rating ~ value.bundle.mean + (1|subID), 
+                         data = data.dACC.sum)
+tab_model(m.dACC.step2)
+```
+
+## Step 3: dACC Betas Predict Reward Rate Controling for Motivation Ratings
+```{r}
+m.dACC.step3<-lme4::lmer(formula = meanRR ~ value.bundle.mean + motive_rating + (1|subID), 
+                         data = data.dACC.sum)
+tab_model(m.dACC.step3,
+          title = "Mediated Reward Rate Effects",
+          dv.labels = "Reward Rate",
+          pred.labels = c("Intercept", "dACC Bundled Betas", "Motivation Ratings"),
+          show.re.var = FALSE, show.stat = TRUE, show.icc = FALSE)
+```
+
+## Plot all 3 Models
+```{r}
+tab_model(m.dACC.step1,m.dACC.step2,m.dACC.step3,
+          title = "Mediation Models",
+          dv.labels = c("Reward Rate","Motivation Ratings","Reward Rate"),
+          #pred.labels = c("Intercept","Money", "Liquid","Motivation Ratings","dACC Bundled Betas"),
+          show.re.var = FALSE, show.stat = TRUE, show.icc = FALSE)
+```
+
+## Step 4: Run the mediation using bmlm package
+```{r}
+data.dACC.mediation<-data.frame(data.dACC.mediation)
+data.dACC.mediation<-isolate(d = data.dACC.mediation,by = "subID",
+                             value = c("meanRR","motive_rating","value.bundle.mean","mot9Code"))
+
+# Running the multilevel mediation on raw data
+set.seed(200)
+# dACC.mediation.results = mlm(d = data.dACC.mediation, id = "subID",
+#                        x = "value.bundle.mean", m = "motive_rating", y = "meanRR",
+#                        iter = 10000)
+dACC.mediation.results = mlm(d = data.dACC.mediation, id = "subID",
+                       x = "value.bundle.mean_cw", m = "motive_rating_cw", y = "meanRR_cw",
+                       iter = 10000)
+
+# if we want to run this mean centered
+
+# dACC.mediation.results = mlm(d = data.dACC.mediation, id = "subID",
+#                        x = "value.bundle.mean_cw", m = "motive_rating_cw", y = "meanRR_cw",
+#                        iter=8000, control = list(max_treedepth = 15))
+
+# visualizing the path
+mlm_path_plot(dACC.mediation.results, text = T)
+
+# summarising within-subject effects
+mlm.sum<-mlm_summary(dACC.mediation.results, level = .9)
+mlm_pars_plot(dACC.mediation.results, type = "coef", pars = c( "cp", "c", "me","pme"))
+mlm_pars_plot(dACC.mediation.results, type = "hist", pars = c( "cp", "c", "me"))
+
+# check for convergence of mcmc traces, requires bayesplot package
+mcmc_trace(as.data.frame(dACC.mediation.results), pars = c("a","b","cp","c"))
+#mcmc_rank_hist(as.data.frame(dACC.mediation.inverse.results), pars = c("a","b","cp","c"))
+
+# Create a pretty table of the parameters estimates
+formattable(mlm.sum)
+```
+
+## Inverse mediation, with RR mediating effects of dACC on motivation ratings.
+```{r}
+set.seed(500)
+dACC.mediation.inverse.results = mlm(d = data.dACC.mediation, id = "subID",
+                       x = "value.bundle.mean_cw", m = "meanRR_cw", y = "motive_rating_cw",
+                       iter = 10000)
+mlm_path_plot(dACC.mediation.inverse.results, text = T)
+mlm.sum.inverse<-mlm_summary(dACC.mediation.inverse.results, level = .9)
+mlm_pars_plot(dACC.mediation.inverse.results, type = "coef", pars = c( "cp", "c", "me","pme"))
+
+# check for convergence of mcmc traces, requires bayesplot package
+mcmc_trace(as.data.frame(dACC.mediation.inverse.results), pars = c("a","b","cp","c"))
+mcmc_rank_hist(as.data.frame(dACC.mediation.inverse.results), pars = c("a","b","cp","c"))
+
+# Create pretty table of the parameter estimates
+formattable(mlm.sum.inverse)
+```
+
+
+# Between-Subjects mediation analysis using mediate from mediation package
+```{r}
+fit.totaleffect<-lm(formula = meanRR.normed ~ value.bundle.mean.normed, data = data.dACC.sum.sub)
+summary(fit.totaleffect)
+
+fit.mediator<-lm(formula = motive_rating.normed ~ value.bundle.mean.normed, data = data.dACC.sum.sub)
+summary(fit.mediator)
+
+fit.dv<-lm(formula = meanRR.normed ~ value.bundle.mean.normed + motive_rating.normed, data = data.dACC.sum.sub)
+summary(fit.dv)
+  
+results=mediate(model.m = fit.mediator, model.y = fit.dv,
+                treat = "value.bundle.mean", mediator = "motive_rating")
+summary(results)
+
+```
+
+```{r}
+fit1<-lm(formula = meanRR.normed  ~ value.bundle.mean.normed, data = data.dACC.sum.sub)
+fit2<-lm(formula =  motive_rating.normed ~ value.bundle.mean.normed, data = data.dACC.sum.sub)
+fit3<-lm(formula =  meanRR.normed ~ value.bundle.mean.normed + motive_rating.normed, data = data.dACC.sum.sub)
+
+tab_model(fit1,fit2,fit3, 
+          title = "Between-Subjects Effects",
+          dv.labels = c("Reward Rate","Motivation Ratings","Reward Rate"),
+          pred.labels = c("Intercept","DACC Betas","Motivation Ratings"),
+          show.re.var = FALSE, show.stat = TRUE, show.icc = FALSE)
+
+
+```
+
+
+## dACC Activation by Subject (Scatterplot)
+```{r roi-dACC, include=FALSE}
+# Reward Rate by dACC betas
+cor.dACC.1<-cor.test(x = data.dACC.sum.sub$value.bundle.mean.normed, y = data.dACC.sum.sub$meanRR.normed)
+Rsquared=round(cor.dACC.1$estimate^2,3)
+textlab1 <- paste("R^2 == ", Rsquared)
+textlab2 <- paste("t(44) = ",round(cor.dACC.1$statistic,3),", p = ",round(cor.dACC.1$p.value,3), sep="")
+
+# Plot
+p.linecolor<-brewer.pal(n=8, name = 'Set1')
+p.dACC.RR.bysub<-ggplot(data = data.dACC.sum.sub, 
+                        aes(x = value.bundle.mean.normed, y = meanRR.normed)) +
+  geom_point(size = 2) +
+  geom_smooth(method="lm", se = TRUE, col = p.linecolor[2]) +
+  annotate("text", x = 0.34, y = -1.8, label = textlab1, color=p.linecolor[2], size = 5, parse=TRUE, hjust=0) +
+  annotate("text", x = 0.344, y = -2.1, label = textlab2, color=p.linecolor[2], size = 5, parse=FALSE, hjust=0) +
+  xlab("Dorsal ACC Beta Estimates") + ylab("Reward Rate") +
+  scale_color_brewer(palette="Set1") +
+  theme_classic() + 
+  theme(panel.grid.minor=element_blank(),
+        plot.background = element_rect(fill = "transparent",colour = NA),
+        rect = element_rect(fill = "transparent"),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=16),
+        legend.position="none",
+        strip.text.x = element_text(size = 16))
+p.dACC.RR.bysub
+
+# Self Report Motivation Ratings by dACC betas
+cor.dACC.2<-cor.test(x = data.dACC.sum.sub$value.bundle.mean.normed, y = data.dACC.sum.sub$motive_rating.normed)
+Rsquared=round(cor.dACC.2$estimate^2,3)
+textlab1 <- paste("R^2 == ", Rsquared)
+textlab2 <- paste("t(44) = ",round(cor.dACC.2$statistic,3),", p = ",round(cor.dACC.2$p.value,3), sep="")
+
+p.dACC.motive.bysub<-ggplot(data = data.dACC.sum.sub, 
+                            aes(x = value.bundle.mean.normed, y = motive_rating.normed)) +
+  geom_point(size = 2) +
+  geom_smooth(method="lm", se = TRUE, col = p.linecolor[2]) +
+  annotate("text", x = .35, y = -1.7, label = textlab1, color=p.linecolor[2], size = 5, parse=TRUE, hjust=0) +
+  annotate("text", x = .35, y = -2.0, label = textlab2, color=p.linecolor[2], size = 5, parse=FALSE, hjust=0) +
+  xlab("Dorsal ACC Beta Estimates") + ylab("Self-Report Motivation Ratings") +
+  scale_color_brewer(palette="Set1") +
+  theme_classic() + 
+  theme(panel.grid.minor=element_blank(),
+        plot.background = element_rect(fill = "transparent",colour = NA),
+        rect = element_rect(fill = "transparent"),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=16),
+        legend.position="none",
+        strip.text.x = element_text(size = 16))
+p.dACC.motive.bysub
+```
+
+## Plotting and Save Figure 3b
+```{r roi-dACC-plot, fig.width=10, fig.height=5}
+p.dACC.bysub<-cowplot::plot_grid(p.dACC.RR.bysub, p.dACC.motive.bysub,
+                              labels = c(" "," "), 
+                              rel_widths = c(1, 1),
+                              rel_heights = c(1.15, 1),
+                              align="v", nrow = 1)
+p.dACC.bysub
+
+# Save the plots
+ggsave(filename = "Figure3_dACC_bysubject.png", plot = p.dACC.bysub, 
+        path = figure.path, device = "png", width = 10, height = 4.5)
+# ggsave(filename = "dACC_betas-rewardrate_bysubject.png", plot = p.dACC.RR.bysub, 
+#        path = figure.path, device = "png", width = 8, height = 6)
+# ggsave(filename = "dACC_betas-motiveratings_bysubject.png", plot = p.dACC.motive.bysub, 
+#        path = figure.path, device = "png", width = 8, height = 6)
+# ggsave(filename = "dACC_RR-motiveratings_bysubject.png", plot = p.dACC.RR.bysub, 
+#        path = figure.path, device = "png", width = 8, height = 6)
+```
+
+
+## Selectivity of dACC: Analyzing additional ROIs
+```{r}
+m.dACC.RR<-lme4::lmer(formula = meanRR ~ mot9Code + value.bundle.mean + (1+mot9Code|subID), 
+                      data = data.dACC.sum)
+m.vmpfc.RR<-lme4::lmer(formula = meanRR ~ mot9Code + value.bundle.mean + (1+mot9Code|subID), 
+                      data = data.vmpfc.sum)
+#m.vmpfc.RR.null<-update(m.vmpfc.RR, formula = ~ . -mot9Code -value.bundle.mean )
+#BF_vmpfc_RR = BIC(m.vmpfc.RR.null) - BIC(m.vmpfc.RR)
+m.accumbens.RR<-lme4::lmer(formula = meanRR ~ mot9Code + value.bundle.mean + (1+mot9Code|subID), 
+                      data = data.accumbens.sum)
+m.caudate.RR<-lme4::lmer(formula = meanRR ~ mot9Code + value.bundle.mean + (1+mot9Code|subID), 
+                      data = data.caudate.sum)
+m.putamen.RR<-lme4::lmer(formula = meanRR ~ mot9Code + value.bundle.mean + (1+mot9Code|subID), 
+                      data = data.putamen.sum)
+m.insula.RR<-lme4::lmer(formula = meanRR ~ mot9Code + value.bundle.mean + (1+mot9Code|subID), 
+                      data = data.insula.sum)
+# Putting Models in a table 
+tab_model(m.dACC.RR,m.vmpfc.RR,m.accumbens.RR,m.caudate.RR,m.putamen.RR,m.insula.RR,
+          title = "Reward Rate Predicted by Bundled Betas",
+          dv.labels = c("dACC","vmPFC","accumbens","caudate","putamen","anterior insula"),
+          pred.labels = c("Intercept","Incentive Conditions","Bundled Betas"),
+          show.re.var = FALSE, show.stat = TRUE, show.icc = FALSE)
+
+# # FDR corrected
+# p.adjust(p = c(.05,.06,.66), method = "none", n = 3)
+# 
+# p.adjust(p = c(.016,.093,.585,.562,.288,.607), method = "none")
+# p.adjust(p = c(.016,.093,.585,.562,.288,.607), method = "fdr")
+```
+
+
+
+```{r}
+m.dACC.motive<-lme4::lmer(formula = motive_rating ~ mot9Code + value.bundle.mean + (1+mot9Code|subID), 
+                      data = data.dACC.sum)
+m.vmpfc.motive<-lme4::lmer(formula = motive_rating ~ mot9Code + value.bundle.mean + (1+mot9Code|subID), 
+                      data = data.vmpfc.sum)
+m.accumbens.motive<-lme4::lmer(formula = motive_rating ~ mot9Code + value.bundle.mean + (1+mot9Code|subID), 
+                      data = data.accumbens.sum)
+m.caudate.motive<-lme4::lmer(formula = motive_rating ~ mot9Code + value.bundle.mean + (1+mot9Code|subID), 
+                      data = data.caudate.sum)
+m.putamen.motive<-lme4::lmer(formula = motive_rating ~ mot9Code + value.bundle.mean + (1+mot9Code|subID), 
+                      data = data.putamen.sum)
+m.insula.motive<-lme4::lmer(formula = motive_rating ~ mot9Code + value.bundle.mean + (1+mot9Code|subID), 
+                      data = data.insula.sum)
+
+# Putting models into a table
+tab_model(m.dACC.motive,m.vmpfc.motive,m.accumbens.motive,m.caudate.motive,m.putamen.motive,m.insula.motive,
+          title = "Motivation Ratings Predicted by Bundled Betas",
+          dv.labels = c("dACC","vmPFC","Accumbens","Caudate","Putamen","Anterior Insula"),
+          pred.labels = c("Intercept","Incentive Conditions","Bundled Betas"),
+          show.re.var = FALSE, show.stat = TRUE, show.icc = FALSE)
+
+#brm(formula = meanRR ~ mot9Code + value.bundle.mean + (1+mot9Code|subID), data = data.caudate.sum)
+```
+
+
+```{r}
+# Reward Rate Coefs
+dACC.coef.RR<-coef(summary(m.dACC.RR))
+vmpfc.coef.RR<-coef(summary(m.vmpfc.RR))
+accumbens.coef.RR<-coef(summary(m.accumbens.RR))
+caudate.coef.RR<-coef(summary(m.caudate.RR))
+putamen.coef.RR<-coef(summary(m.putamen.RR))
+insula.coef.RR<-coef(summary(m.insula.RR))
+
+# Motivation Rating Coefs
+dACC.coef.motive<-coef(summary(m.dACC.motive))
+vmpfc.coef.motive<-coef(summary(m.vmpfc.motive))
+accumbens.coef.motive<-coef(summary(m.accumbens.motive))
+caudate.coef.motive<-coef(summary(m.caudate.motive))
+putamen.coef.motive<-coef(summary(m.putamen.motive))
+insula.coef.motive<-coef(summary(m.insula.motive))
+
+data.SV.names<-rep(c("dACC","vmPFC","NAc","Caudate","Putamen","Insula"),2)
+data.SV.betas<-c(dACC.coef.RR["value.bundle.mean","Estimate"],
+                 vmpfc.coef.RR["value.bundle.mean","Estimate"],
+                 accumbens.coef.RR["value.bundle.mean","Estimate"],
+                 caudate.coef.RR["value.bundle.mean","Estimate"],
+                 putamen.coef.RR["value.bundle.mean","Estimate"],
+                 insula.coef.RR["value.bundle.mean","Estimate"],
+                 dACC.coef.motive["value.bundle.mean","Estimate"],
+                 vmpfc.coef.motive["value.bundle.mean","Estimate"],
+                 accumbens.coef.motive["value.bundle.mean","Estimate"],
+                 caudate.coef.motive["value.bundle.mean","Estimate"],
+                 putamen.coef.motive["value.bundle.mean","Estimate"],
+                 insula.coef.motive["value.bundle.mean","Estimate"])
+data.SV.std<-c(dACC.coef.RR["value.bundle.mean","Std. Error"],
+               vmpfc.coef.RR["value.bundle.mean","Std. Error"],
+               accumbens.coef.RR["value.bundle.mean","Std. Error"],
+               caudate.coef.RR["value.bundle.mean","Std. Error"],
+               putamen.coef.RR["value.bundle.mean","Std. Error"],
+               insula.coef.RR["value.bundle.mean","Std. Error"],
+               dACC.coef.motive["value.bundle.mean","Std. Error"],
+               vmpfc.coef.motive["value.bundle.mean","Std. Error"],
+               accumbens.coef.motive["value.bundle.mean","Std. Error"],
+               caudate.coef.motive["value.bundle.mean","Std. Error"],
+               putamen.coef.motive["value.bundle.mean","Std. Error"],
+               insula.coef.motive["value.bundle.mean","Std. Error"])
+data.SV.ci<-data.SV.std*1.96
+data.SV.model<-c(rep("Reward Rate",6),rep("Motivation Ratings",6))
+data.SV.number<-c(rep(1:6,2))
+
+# Combine into a data frame
+data.SV<-data.frame(names=data.SV.names,betas=data.SV.betas,se=data.SV.std,ci=data.SV.ci,Outcome=data.SV.model,number=data.SV.number)
+data.SV$names<-factor(data.SV$names, levels = c("vmPFC","NAc","Caudate","Putamen","Insula","dACC"))
+
+# Plot the Bundled Beta Estimates for Each of the ROIs
+#p.linecolor<-brewer.pal(n=8, name = 'Set1')
+p.bundled<-ggplot(data = data.SV, aes(x = betas, y = names, shape=Outcome, color=Outcome)) +
+  geom_point(stat="identity", size = 3) +
+  geom_errorbarh(aes(xmin=betas-ci, xmax=betas+ci, height = .1)) +
+  geom_vline(xintercept=0, linetype="dashed", color="grey0", size = .7) +
+  xlab("Bundled Beta Effect") + ylab("Regions of Interest") +
+  #xlim(-0.05, .15) +
+  facet_grid(.~Outcome, scales = "free_x")+
+  scale_color_brewer(palette="Set1") +
+  theme_classic() + 
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=14, face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        strip.text.x = element_text(size = 14, face = "bold"))
+p.bundled
+```
+
+## Save Figure 4
+```{r}
+p.figure4<-cowplot::plot_grid(p.bundled, 
+                              labels = c("4"), label_size = 16)
+ggsave(filename = "Figure4.eps", plot = p.figure4, 
+       device="eps", dpi = 300,
+       path = figure.path, width = 7, height = 5, scale = 1.1)
+```
+
+
+# ROI Analyses: vmPFC
+```{r roi-vmpfc, include=FALSE}
+# Reward Rate 
+cor.vmpfc.1<-cor.test(x = data.vmpfc.sum.sub$value.bundle.mean.normed, y = data.vmpfc.sum.sub$meanRR.normed)
+textlab1 <- paste("R = ", round(cor.vmpfc.1$estimate,2))
+textlab2 <- paste("t = ",round(cor.vmpfc.1$statistic,3),", p = ",round(cor.vmpfc.1$p.value,2), sep="")
+
+# Plot
+p.linecolor<-brewer.pal(n=8, name = 'Set1')
+p.vmpfc.RR.bysub<-ggplot(data = data.vmpfc.sum.sub, 
+                        aes(x = value.bundle.mean.normed, y = meanRR.normed)) +
+  geom_point(size = 2) +
+  geom_smooth(method="lm", se = TRUE, col = p.linecolor[1]) +
+  annotate("text", x = -2.4, y = 1.7, label = textlab1, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  annotate("text", x = -2.4, y = 1.4, label = textlab2, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  xlab("vmPFC Beta Estimates") + ylab("Reward Rate") +
+  scale_color_brewer(palette="Set1") +
+  theme_gray() + 
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))
+#p.vmpfc.RR.bysub
+
+# Self Report Motivation Ratings 
+cor.within<-cor.test(x = data.vmpfc.sum.sub$value.bundle.mean.normed, y = data.vmpfc.sum.sub$motive_rating.normed)
+textlab1 <- paste("R = ", round(cor.within$estimate,2))
+textlab2 <- paste("t = ",round(cor.within$statistic,3),", p = ",round(cor.within$p.value,2), sep="")
+
+p.linecolor<-brewer.pal(n=8, name = 'Set1')
+p.vmpfc.motive.bysub<-ggplot(data = data.vmpfc.sum.sub, 
+                            aes(x = value.bundle.mean.normed, y = motive_rating.normed)) +
+  geom_point(size = 2) +
+  geom_smooth(method="lm", se = TRUE, col = p.linecolor[1]) +
+  annotate("text", x = -0.2, y = 1.7, label = textlab1, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  annotate("text", x = -0.2, y = 1.4, label = textlab2, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  xlab("vmPFC Beta Estimates") + ylab("Self Report Motivation Ratings") +
+  scale_color_brewer(palette="Set1") +
+  theme_gray() + 
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))
+#p.vmpfc.motive.bysub
+```
+```{r roi-vmpfc-plot, fig.width=10, fig.height=5}
+p.vmpfc<-cowplot::plot_grid(p.vmpfc.RR.bysub, p.vmpfc.motive.bysub,
+                              labels = c(" "," "), 
+                              rel_widths = c(1, 1),
+                              rel_heights = c(1.15, 1),
+                              align="v", nrow = 1)
+p.vmpfc
+```
+
+## Within-Subjects Scatterplots vmPFC
+```{r roi-vmpfc-within, include=FALSE}
+# Consolidate
+data.MotDiff<-data.vmpfc.sum %>% 
+  dplyr::select(subID,Liquid,Reward,
+                value.bundle.mean,value.bundle.mean.normed,value.bundle.mean.centered,
+                meanRR,meanRR.normed,meanRR.centered,
+                motive_rating,motive_rating.normed,motive_rating.centered) %>%
+  unite("Mot9",Liquid:Reward,remove = FALSE) %>%
+  pivot_wider(id_cols = "subID", 
+              values_from = c("value.bundle.mean","value.bundle.mean.normed","value.bundle.mean.centered",
+                              "meanRR","meanRR.normed","meanRR.centered",
+                              "motive_rating","motive_rating.normed","motive_rating.centered"), 
+              names_from = rep("Mot9",9)) %>%
+  mutate(value.bundle_diff=value.bundle.mean_Juice_4-value.bundle.mean_Saltwater_1,
+         value.bundle.normed_diff=value.bundle.mean.normed_Juice_4-value.bundle.mean.normed_Saltwater_1,
+         value.bundle.centered_diff=value.bundle.mean.centered_Juice_4-value.bundle.mean.centered_Saltwater_1,
+         meanRR_diff=meanRR_Juice_4-meanRR_Saltwater_1,
+         meanRR.normed_diff=meanRR.normed_Juice_4-meanRR.normed_Saltwater_1,
+         meanRR.centered_diff=meanRR.centered_Juice_4-meanRR.centered_Saltwater_1,
+         motive_rating_diff=motive_rating_Juice_4-motive_rating_Saltwater_1,
+         motive_rating.normed_diff=motive_rating.normed_Juice_4-motive_rating.normed_Saltwater_1,
+         motive_rating.centered_diff=motive_rating.centered_Juice_4-motive_rating.centered_Saltwater_1)
+
+# vmpfc vs. Reward Rate
+cor.within<-cor.test(data.MotDiff$value.bundle.normed_diff, data.MotDiff$meanRR.normed_diff)
+textlab1 <- paste("R = ", round(cor.within$estimate,2))
+textlab2 <- paste("t = ",round(cor.within$statistic,3),", p = ",round(cor.within$p.value,2), sep="")
+
+p.linecolor<-brewer.pal(n=8, name = 'Set1')
+p.vmpfc.MotDiff<-ggplot(data = data.MotDiff, aes(x = value.bundle.normed_diff, y = meanRR.normed_diff)) +
+  geom_point(size = 2) + 
+  geom_smooth(method="lm", se = TRUE, col = p.linecolor[1]) +
+  annotate("text", x = -3, y = 3, label = textlab1, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  annotate("text", x = -3, y = 2.4, label = textlab2, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  xlab("vmPFC Difference") + ylab("Reward Rate Difference") +
+  coord_cartesian(xlim = c(-4,4),ylim=c(-4,4)) +
+  scale_color_brewer(palette="Set1") +
+  theme_gray() + 
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))
+#p.vmpfc.MotDiff
+
+# vmpfc vs Motivation Ratings
+cor.within<-cor.test(data.MotDiff$value.bundle.normed_diff, data.MotDiff$motive_rating.normed_diff)
+textlab1 <- paste("R = ", round(cor.within$estimate,2))
+textlab2 <- paste("t = ",round(cor.within$statistic,3),", p = ",round(cor.within$p.value,2), sep="")
+
+p.linecolor<-brewer.pal(n=8, name = 'Set1')
+p.vmpfc.MotDiff2<-ggplot(data = data.MotDiff, aes(x = value.bundle.normed_diff, y = motive_rating.normed_diff)) +
+  geom_point(size = 2) + 
+  geom_smooth(method="lm", se = TRUE, col = p.linecolor[1]) +
+  annotate("text", x = -3, y = 3.8, label = textlab1, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  annotate("text", x = -3, y = 3.5, label = textlab2, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  xlab("vmPFC Difference") + ylab("Motivation Ratings Difference") +
+  #coord_cartesian(xlim = c(-3,3),ylim=c(-0,4)) +
+  scale_color_brewer(palette="Set1") +
+  theme_gray() + 
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))
+#p.vmpfc.MotDiff2
+```
+```{r roi-vmpfc-within-plot, fig.width=10, fig.height=5}
+p.vmpfc.diff<-cowplot::plot_grid(p.vmpfc.MotDiff, p.vmpfc.MotDiff2,
+                              labels = c(" "," "), 
+                              rel_widths = c(1, 1),
+                              rel_heights = c(1, 1),
+                              align="v", nrow = 1)
+p.vmpfc.diff
+```
+
+# ROI Analyses: Accumbens
+```{r roi-accumbens, include=FALSE}
+# Reward Rate 
+cor.within<-cor.test(x = data.accumbens.sum.sub$value.bundle.mean.normed, y = data.accumbens.sum.sub$meanRR.normed)
+textlab1 <- paste("R = ", round(cor.within$estimate,2))
+textlab2 <- paste("t = ",round(cor.within$statistic,3),", p = ",round(cor.within$p.value,2), sep="")
+
+# Plot
+p.linecolor<-brewer.pal(n=8, name = 'Set1')
+p.accumbens.RR.bysub<-ggplot(data = data.accumbens.sum.sub, 
+                        aes(x = value.bundle.mean.normed, y = meanRR.normed)) +
+  geom_point(size = 2) +
+  geom_smooth(method="lm", se = TRUE, col = p.linecolor[1]) +
+  annotate("text", x = .5, y = -1.7, label = textlab1, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  annotate("text", x = .5, y = -2.0, label = textlab2, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  xlab("Accumbens Beta Estimates") + ylab("Reward Rate") +
+  scale_color_brewer(palette="Set1") +
+  theme_gray() + 
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))
+#p.accumbens.RR.bysub
+
+# Self Report Motivation Ratings 
+cor.within<-cor.test(x = data.accumbens.sum.sub$value.bundle.mean.normed, y = data.accumbens.sum.sub$motive_rating.normed)
+textlab1 <- paste("R = ", round(cor.within$estimate,2))
+textlab2 <- paste("t = ",round(cor.within$statistic,3),", p = ",round(cor.within$p.value,2), sep="")
+
+p.linecolor<-brewer.pal(n=8, name = 'Set1')
+p.accumbens.motive.bysub<-ggplot(data = data.accumbens.sum.sub, 
+                            aes(x = value.bundle.mean.normed, y = motive_rating.normed)) +
+  geom_point(size = 2) +
+  geom_smooth(method="lm", se = TRUE, col = p.linecolor[1]) +
+  annotate("text", x = .35, y = -1.5, label = textlab1, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  annotate("text", x = .35, y = -1.8, label = textlab2, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  xlab("Accumbens Beta Estimates") + ylab("Motivation Ratings") +
+  scale_color_brewer(palette="Set1") +
+  theme_gray() + 
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))
+#p.accumbens.motive.bysub
+```
+```{r roi-accumbens-plot, fig.width=10, fig.height=5}
+
+
+p.accumbens<-cowplot::plot_grid(p.accumbens.RR.bysub, p.accumbens.motive.bysub,
+                              labels = c(" "," "), 
+                              rel_widths = c(1, 1),
+                              rel_heights = c(1, 1),
+                              align="v", nrow = 1)
+p.accumbens
+```
+
+# ROI Analyses: Caudate
+```{r roi-caudate, include=FALSE}
+# Reward Rate 
+cor.within<-cor.test(x = data.caudate.sum.sub$value.bundle.mean.normed, y = data.caudate.sum.sub$meanRR.normed)
+textlab1 <- paste("R = ", round(cor.within$estimate,2))
+textlab2 <- paste("t = ",round(cor.within$statistic,3),", p = ",round(cor.within$p.value,2), sep="")
+
+# Plot
+p.linecolor<-brewer.pal(n=8, name = 'Set1')
+p.caudate.RR.bysub<-ggplot(data = data.caudate.sum.sub, 
+                        aes(x = value.bundle.mean.normed, y = meanRR.normed)) +
+  geom_point(size = 2) +
+  geom_smooth(method="lm", se = TRUE, col = p.linecolor[1]) +
+  annotate("text", x = 0, y = -2.0, label = textlab1, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  annotate("text", x = 0, y = -2.3, label = textlab2, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  xlab("Caudate Beta Estimates") + ylab("Reward Rate") +
+  scale_color_brewer(palette="Set1") +
+  theme_gray() + 
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))
+#p.caudate.RR.bysub
+
+# Self Report Motivation Ratings 
+cor.within<-cor.test(x = data.caudate.sum.sub$value.bundle.mean.normed, y = data.caudate.sum.sub$motive_rating.normed)
+textlab1 <- paste("R = ", round(cor.within$estimate,2))
+textlab2 <- paste("t = ",round(cor.within$statistic,3),", p = ",round(cor.within$p.value,2), sep="")
+
+p.linecolor<-brewer.pal(n=8, name = 'Set1')
+p.caudate.motive.bysub<-ggplot(data = data.caudate.sum.sub, 
+                            aes(x = value.bundle.mean.normed, y = motive_rating.normed)) +
+  geom_point(size = 2) +
+  geom_smooth(method="lm", se = TRUE, col = p.linecolor[1]) +
+  annotate("text", x = .35, y = -1.4, label = textlab1, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  annotate("text", x = .35, y = -1.7, label = textlab2, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  xlab("Caudate Beta Estimates") + ylab("Motivation Ratings") +
+  scale_color_brewer(palette="Set1") +
+  theme_gray() + 
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))
+#p.caudate.motive.bysub
+```
+```{r roi-caudate-plot, fig.width=10, fig.height=5}
+p.caudate<-cowplot::plot_grid(p.caudate.RR.bysub, p.caudate.motive.bysub,
+                              labels = c(" "," "), 
+                              rel_widths = c(1, 1),
+                              rel_heights = c(1.15, 1),
+                              align="v", nrow = 1)
+p.caudate
+```
+
+## Within-Subjects Scatterplots Caudate
+```{r roi-caudate-within, include=FALSE}
+# Consolidate
+data.MotDiff<-data.caudate.sum %>% 
+  dplyr::select(subID,Liquid,Reward,
+                value.bundle.mean,value.bundle.mean.normed,value.bundle.mean.centered,
+                meanRR,meanRR.normed,meanRR.centered,
+                motive_rating,motive_rating.normed,motive_rating.centered) %>%
+  unite("Mot9",Liquid:Reward,remove = FALSE) %>%
+  pivot_wider(id_cols = "subID", 
+              values_from = c("value.bundle.mean","value.bundle.mean.normed","value.bundle.mean.centered",
+                              "meanRR","meanRR.normed","meanRR.centered",
+                              "motive_rating","motive_rating.normed","motive_rating.centered"), 
+              names_from = rep("Mot9",9)) %>%
+  mutate(value.bundle_diff=value.bundle.mean_Juice_4-value.bundle.mean_Saltwater_1,
+         value.bundle.normed_diff=value.bundle.mean.normed_Juice_4-value.bundle.mean.normed_Saltwater_1,
+         value.bundle.centered_diff=value.bundle.mean.centered_Juice_4-value.bundle.mean.centered_Saltwater_1,
+         meanRR_diff=meanRR_Juice_4-meanRR_Saltwater_1,
+         meanRR.normed_diff=meanRR.normed_Juice_4-meanRR.normed_Saltwater_1,
+         meanRR.centered_diff=meanRR.centered_Juice_4-meanRR.centered_Saltwater_1,
+         motive_rating_diff=motive_rating_Juice_4-motive_rating_Saltwater_1,
+         motive_rating.normed_diff=motive_rating.normed_Juice_4-motive_rating.normed_Saltwater_1,
+         motive_rating.centered_diff=motive_rating.centered_Juice_4-motive_rating.centered_Saltwater_1)
+
+# caudate vs. Reward Rate
+cor.within<-cor.test(data.MotDiff$value.bundle.normed_diff, data.MotDiff$meanRR.normed_diff)
+textlab1 <- paste("R = ", round(cor.within$estimate,2))
+textlab2 <- paste("t = ",round(cor.within$statistic,3),", p = ",round(cor.within$p.value,2), sep="")
+
+p.linecolor<-brewer.pal(n=8, name = 'Set1')
+p.caudate.MotDiff<-ggplot(data = data.MotDiff, aes(x = value.bundle.normed_diff, y = meanRR.normed_diff)) +
+  geom_point(size = 2) + 
+  geom_smooth(method="lm", se = TRUE, col = p.linecolor[1]) +
+  annotate("text", x = -3, y = 3, label = textlab1, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  annotate("text", x = -3, y = 2.4, label = textlab2, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  xlab("Caudate Difference") + ylab("Reward Rate Difference") +
+  coord_cartesian(xlim = c(-4,4),ylim=c(-4,4)) +
+  scale_color_brewer(palette="Set1") +
+  theme_gray() + 
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))
+#p.caudate.MotDiff
+
+# caudate vs Motivation Ratings
+cor.within<-cor.test(data.MotDiff$value.bundle.normed_diff, data.MotDiff$motive_rating.normed_diff)
+textlab1 <- paste("R = ", round(cor.within$estimate,2))
+textlab2 <- paste("t = ",round(cor.within$statistic,3),", p = ",round(cor.within$p.value,2), sep="")
+
+p.linecolor<-brewer.pal(n=8, name = 'Set1')
+p.caudate.MotDiff2<-ggplot(data = data.MotDiff, aes(x = value.bundle.normed_diff, y = motive_rating.normed_diff)) +
+  geom_point(size = 2) + 
+  geom_smooth(method="lm", se = TRUE, col = p.linecolor[1]) +
+  annotate("text", x = -3, y = 3.8, label = textlab1, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  annotate("text", x = -3, y = 3.5, label = textlab2, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  xlab("Caudate Difference") + ylab("Motivation Ratings Difference") +
+  #coord_cartesian(xlim = c(-3,3),ylim=c(-0,4)) +
+  scale_color_brewer(palette="Set1") +
+  theme_gray() + 
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))
+#p.caudate.MotDiff2
+```
+```{r roi-caudate-within-plot, fig.width=10, fig.height=5}
+p.caudate.diff<-cowplot::plot_grid(p.caudate.MotDiff, p.caudate.MotDiff2,
+                              labels = c(" "," "), 
+                              rel_widths = c(1, 1),
+                              rel_heights = c(1, 1),
+                              align="v", nrow = 1)
+p.caudate.diff
+```
+
+# ROI Analyses: Putamen
+```{r roi-putamen, include=FALSE}
+# Reward Rate 
+cor.within<-cor.test(x = data.putamen.sum.sub$value.bundle.mean.normed, y = data.putamen.sum.sub$meanRR.normed)
+textlab1 <- paste("R = ", round(cor.within$estimate,2))
+textlab2 <- paste("t = ",round(cor.within$statistic,3),", p = ",round(cor.within$p.value,2), sep="")
+
+# Plot
+p.linecolor<-brewer.pal(n=8, name = 'Set1')
+p.putamen.RR.bysub<-ggplot(data = data.putamen.sum.sub, 
+                        aes(x = value.bundle.mean.normed, y = meanRR.normed)) +
+  geom_point(size = 2) +
+  geom_smooth(method="lm", se = TRUE, col = p.linecolor[1]) +
+  annotate("text", x = 0, y = -2.0, label = textlab1, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  annotate("text", x = 0, y = -2.3, label = textlab2, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  xlab("Putamen Beta Estimates") + ylab("Reward Rate") +
+  scale_color_brewer(palette="Set1") +
+  theme_gray() + 
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))
+#p.putamen.RR.bysub
+
+# Self Report Motivation Ratings 
+cor.within<-cor.test(x = data.putamen.sum.sub$value.bundle.mean.normed, y = data.putamen.sum.sub$motive_rating.normed)
+textlab1 <- paste("R = ", round(cor.within$estimate,2))
+textlab2 <- paste("t = ",round(cor.within$statistic,3),", p = ",round(cor.within$p.value,2), sep="")
+
+p.linecolor<-brewer.pal(n=8, name = 'Set1')
+p.putamen.motive.bysub<-ggplot(data = data.putamen.sum.sub, 
+                               aes(x = value.bundle.mean.normed, y = motive_rating.normed)) +
+  geom_point(size = 2) +
+  geom_smooth(method="lm", se = TRUE, col = p.linecolor[1]) +
+  annotate("text", x = .35, y = -1.7, label = textlab1, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  annotate("text", x = .35, y = -2.0, label = textlab2, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  xlab("Putamen Beta Estimates") + ylab("Motivation Ratings") +
+  scale_color_brewer(palette="Set1") +
+  theme_gray() + 
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))
+#p.putamen.motive.bysub
+```
+```{r roi-putamen-plot, fig.width=10, fig.height=5}
+
+
+p.putamen<-cowplot::plot_grid(p.putamen.RR.bysub, p.putamen.motive.bysub,
+                              labels = c(" "," "), 
+                              rel_widths = c(1, 1),
+                              rel_heights = c(1, 1),
+                              align="v", nrow = 1)
+p.putamen
+```
+
+## Within-Subjects Scatterplots Putamen
+```{r roi-putamen-within, include=FALSE}
+# Consolidate
+data.MotDiff<-data.putamen.sum %>% 
+  dplyr::select(subID,Liquid,Reward,
+                value.bundle.mean,value.bundle.mean.normed,value.bundle.mean.centered,
+                meanRR,meanRR.normed,meanRR.centered,
+                motive_rating,motive_rating.normed,motive_rating.centered) %>%
+  unite("Mot9",Liquid:Reward,remove = FALSE) %>%
+  pivot_wider(id_cols = "subID", 
+              values_from = c("value.bundle.mean","value.bundle.mean.normed","value.bundle.mean.centered",
+                              "meanRR","meanRR.normed","meanRR.centered",
+                              "motive_rating","motive_rating.normed","motive_rating.centered"), 
+              names_from = rep("Mot9",9)) %>%
+  mutate(value.bundle_diff=value.bundle.mean_Juice_4-value.bundle.mean_Saltwater_1,
+         value.bundle.normed_diff=value.bundle.mean.normed_Juice_4-value.bundle.mean.normed_Saltwater_1,
+         value.bundle.centered_diff=value.bundle.mean.centered_Juice_4-value.bundle.mean.centered_Saltwater_1,
+         meanRR_diff=meanRR_Juice_4-meanRR_Saltwater_1,
+         meanRR.normed_diff=meanRR.normed_Juice_4-meanRR.normed_Saltwater_1,
+         meanRR.centered_diff=meanRR.centered_Juice_4-meanRR.centered_Saltwater_1,
+         motive_rating_diff=motive_rating_Juice_4-motive_rating_Saltwater_1,
+         motive_rating.normed_diff=motive_rating.normed_Juice_4-motive_rating.normed_Saltwater_1,
+         motive_rating.centered_diff=motive_rating.centered_Juice_4-motive_rating.centered_Saltwater_1)
+
+# putamen vs. Reward Rate
+cor.within<-cor.test(data.MotDiff$value.bundle.normed_diff, data.MotDiff$meanRR.normed_diff)
+textlab1 <- paste("R = ", round(cor.within$estimate,2))
+textlab2 <- paste("t = ",round(cor.within$statistic,3),", p = ",round(cor.within$p.value,2), sep="")
+
+p.linecolor<-brewer.pal(n=8, name = 'Set1')
+p.putamen.MotDiff<-ggplot(data = data.MotDiff, aes(x = value.bundle.normed_diff, y = meanRR.normed_diff)) +
+  geom_point(size = 2) + 
+  geom_smooth(method="lm", se = TRUE, col = p.linecolor[1]) +
+  annotate("text", x = -3, y = 3, label = textlab1, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  annotate("text", x = -3, y = 2.4, label = textlab2, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  xlab("Putamen Difference") + ylab("Reward Rate Difference") +
+  coord_cartesian(xlim = c(-4,4),ylim=c(-4,4)) +
+  scale_color_brewer(palette="Set1") +
+  theme_gray() + 
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))
+#p.putamen.MotDiff
+
+# putamen vs Motivation Ratings
+cor.within<-cor.test(data.MotDiff$value.bundle.normed_diff, data.MotDiff$motive_rating.normed_diff)
+textlab1 <- paste("R = ", round(cor.within$estimate,2))
+textlab2 <- paste("t = ",round(cor.within$statistic,3),", p = ",round(cor.within$p.value,2), sep="")
+
+p.linecolor<-brewer.pal(n=8, name = 'Set1')
+p.putamen.MotDiff2<-ggplot(data = data.MotDiff, aes(x = value.bundle.normed_diff, y = motive_rating.normed_diff)) +
+  geom_point(size = 2) + 
+  geom_smooth(method="lm", se = TRUE, col = p.linecolor[1]) +
+  annotate("text", x = -3, y = 3.8, label = textlab1, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  annotate("text", x = -3, y = 3.5, label = textlab2, color=p.linecolor[1], size = 5, parse=FALSE, hjust=0) +
+  xlab("Putamen Difference") + ylab("Motivation Ratings Difference") +
+  #coord_cartesian(xlim = c(-3,3),ylim=c(-0,4)) +
+  scale_color_brewer(palette="Set1") +
+  theme_gray() + 
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=12,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))
+#p.putamen.MotDiff2
+```
+```{r roi-putamen-within-plot, fig.width=10, fig.height=5}
+p.putamen.diff<-cowplot::plot_grid(p.putamen.MotDiff, p.putamen.MotDiff2,
+                              labels = c(" "," "), 
+                              rel_widths = c(1, 1),
+                              rel_heights = c(1, 1),
+                              align="v", nrow = 1)
+p.putamen.diff
+```
+
+
+
+# scratch congruency
+```{r}
+RR.sum=summarySEwithin2(data=incentive.means.cong, measurevar = "meanRR",
+                        withinvars = c("congruency"), idvar = "subID")
+p.RR.cong<-ggplot(RR.sum, aes(x=congruency, y=meanRR)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", 
+           stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), 
+                aes(ymin=meanRR-se, ymax=meanRR+se), width=.2) +
+  xlab("Congruency") + ylab("Reward Rate") +
+  labs(fill = "Liquid") +
+  geom_hline(yintercept = .4, linetype="dashed") +
+  scale_fill_brewer(palette="Set2") +
+  coord_cartesian(ylim=c(.5,.75)) +
+  #coord_cartesian(ylim=c(600,650)) +
+  #scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=14,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="right",
+        legend.title=element_text(size=14, face = "bold"),
+        legend.text = element_text(size=14),
+        strip.text.x = element_text(size = 12))
+p.RR.cong
+
+
+RR.sum=summarySEwithin2(data=incentive9.means.cong, measurevar = "meanRR",
+                        withinvars = c("congruency","Liquid","MoneyLabel"), idvar = "subID")
+p.RR.mot9.cong<-ggplot(RR.sum, aes(x=MoneyLabel, y=meanRR, fill=Liquid)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", 
+           stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), 
+                aes(ymin=meanRR-se, ymax=meanRR+se), width=.2) +
+  xlab("Money") + ylab("Reward Rate") +
+  labs(fill = "Liquid") +
+  geom_hline(yintercept = .4, linetype="dashed") +
+  scale_fill_brewer(palette="Set2") +
+  coord_cartesian(ylim=c(.5,.8)) +
+  facet_grid(~congruency)+
+  #scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=14,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="right",
+        legend.title=element_text(size=14, face = "bold"),
+        legend.text = element_text(size=14),
+        strip.text.x = element_text(size = 12))
+p.RR.mot9.cong
+
+ggsave(filename = "congruency.eps", plot = p.RR.cong, 
+       device="eps", dpi = 300,
+       path = figure.path, width = 3, height = 3, scale = 1.1)
+
+ggsave(filename = "congruency_mot9.eps", plot = p.RR.mot9.cong, 
+       device="eps", dpi = 300,
+       path = figure.path, width = 6, height = 3, scale = 1.1)
+
+```
+
+# scratch switch costs
+```{r}
+RR.sum=summarySEwithin2(data=incentive.means.switch, measurevar = "meanRR",
+                        withinvars = c("switch_trial"), idvar = "subID")
+p.RR.switch<-ggplot(RR.sum, aes(x=switch_trial, y=meanRR)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", 
+           stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), 
+                aes(ymin=meanRR-se, ymax=meanRR+se), width=.2) +
+  #xlab("Congruency") + 
+  ylab("Reward Rate") +
+  labs(fill = "Liquid") +
+  geom_hline(yintercept = .4, linetype="dashed") +
+  scale_fill_brewer(palette="Set2") +
+  coord_cartesian(ylim=c(.5,.75)) +
+  #coord_cartesian(ylim=c(600,650)) +
+  #scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=14,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="right",
+        legend.title=element_text(size=14, face = "bold"),
+        legend.text = element_text(size=14),
+        strip.text.x = element_text(size = 12))
+p.RR.switch
+
+
+RR.sum=summarySEwithin2(data=incentive9.means.switch, measurevar = "meanRR",
+                        withinvars = c("switch_trial","Liquid","MoneyLabel"), idvar = "subID")
+p.RR.mot9.switch<-ggplot(RR.sum, aes(x=MoneyLabel, y=meanRR, fill=Liquid)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", 
+           stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), 
+                aes(ymin=meanRR-se, ymax=meanRR+se), width=.2) +
+  xlab("Money") + ylab("Reward Rate") +
+  labs(fill = "Liquid") +
+  geom_hline(yintercept = .4, linetype="dashed") +
+  scale_fill_brewer(palette="Set2") +
+  coord_cartesian(ylim=c(.5,.8)) +
+  facet_grid(~switch_trial)+
+  #scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=14,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="right",
+        legend.title=element_text(size=14, face = "bold"),
+        legend.text = element_text(size=14),
+        strip.text.x = element_text(size = 12))
+p.RR.mot9.switch
+
+ggsave(filename = "switchcostRR.eps", plot = p.RR.switch, 
+       device="eps", dpi = 300,
+       path = figure.path, width = 3, height = 3, scale = 1.1)
+
+ggsave(filename = "switchcostRR_mot9.eps", plot = p.RR.mot9.switch, 
+       device="eps", dpi = 300,
+       path = figure.path, width = 6, height = 3, scale = 1.1)
+```
+
+```{r}
+RT.sum=summarySEwithin2(data=incentiveRT.means.switch, measurevar = "meanRT",
+                        withinvars = c("switch_trial"), idvar = "subID")
+p.RT.switch<-ggplot(RT.sum, aes(x=switch_trial, y=meanRT)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", 
+           stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), 
+                aes(ymin=meanRT-se, ymax=meanRT+se), width=.2) +
+  #xlab("Congruency") + 
+  ylab("Response Time") +
+  labs(fill = "Liquid") +
+  geom_hline(yintercept = .4, linetype="dashed") +
+  scale_fill_brewer(palette="Set2") +
+  #coord_cartesian(ylim=c(.5,.75)) +
+  coord_cartesian(ylim=c(600,700)) +
+  #scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=14,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="right",
+        legend.title=element_text(size=14, face = "bold"),
+        legend.text = element_text(size=14),
+        strip.text.x = element_text(size = 12))
+p.RT.switch
+
+RT.sum=summarySEwithin2(data=incentive9RT.means.switch, measurevar = "meanRT",
+                        withinvars = c("switch_trial","Liquid","MoneyLabel"), idvar = "subID")
+p.RT.mot9.switch<-ggplot(RT.sum, aes(x=MoneyLabel, y=meanRT, fill=Liquid)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", 
+           stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), 
+                aes(ymin=meanRT-se, ymax=meanRT+se), width=.2) +
+  xlab("Money") + ylab("Response Time") +
+  labs(fill = "Liquid") +
+  geom_hline(yintercept = .4, linetype="dashed") +
+  scale_fill_brewer(palette="Set2") +
+  #coord_cartesian(ylim=c(.5,.8)) +
+  coord_cartesian(ylim=c(550,700)) +
+  facet_grid(~switch_trial)+
+  #scale_fill_discrete(name="Monetary Reward") +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=14,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="right",
+        legend.title=element_text(size=14, face = "bold"),
+        legend.text = element_text(size=14),
+        strip.text.x = element_text(size = 12))
+p.RT.mot9.switch
+
+
+#m.switch<-lmer(meanRR ~ switch_trial * liqCode * moneyCode + (1|subID), data = incentive9.means.switch)
+#summary(m.switch)
+
+ggsave(filename = "switchcostRT.eps", plot = p.RT.switch, 
+       device="eps", dpi = 300,
+       path = figure.path, width = 3, height = 3, scale = 1.1)
+
+ggsave(filename = "switchcostRT_mot9.eps", plot = p.RT.mot9.switch, 
+       device="eps", dpi = 300,
+       path = figure.path, width = 6, height = 3, scale = 1.1)
+```
+
+
+
+
+```{r}
+tmp1<-lme4::lmer(formula = value.bundle.mean ~ moneyCode + liqCode + meanRR + (1|subID), 
+                data = data.dACC.sum)
+tmp2<-lme4::lmer(formula = value.bundle.mean ~ moneyCode + liqCode + meanRR + motive_rating + (1|subID), 
+                data = data.dACC.sum)
+tab_model(tmp1,tmp2, 
+          title= "dACC Betas by Reward Rate and Motivation Ratings",
+          dv.labels = c("dACC Betas","dACC Betas"),
+          pred.labels = c("Intercept","Money","Liquid","Reward Rate","Motivation Ratings"),
+          show.re.var = FALSE, show.stat=TRUE, show.icc = FALSE)
+
+tmp1<-lme4::lmer(formula = value.bundle.mean ~ moneyCode + liqCode + meanRR + (1|subID), 
+                data = data.putamen.sum)
+tmp2<-lme4::lmer(formula = value.bundle.mean ~ moneyCode + liqCode + meanRR + motive_rating + (1|subID), 
+                data = data.putamen.sum)
+tab_model(tmp1,tmp2,
+          title= "Putamen Betas by Reward Rate and Motivation Ratings",
+          dv.labels = c("Putamen Betas","Putamen Betas"),
+          pred.labels = c("Intercept","Money","Liquid","Reward Rate","Motivation Ratings"),
+          show.re.var = FALSE, show.stat=TRUE, show.icc = FALSE)
+
+tmp1<-lme4::lmer(formula = value.bundle.mean ~ moneyCode + liqCode + meanRR + (1|subID), 
+                data = data.caudate.sum)
+tmp2<-lme4::lmer(formula = value.bundle.mean ~ moneyCode + liqCode + meanRR + motive_rating + (1|subID), 
+                data = data.caudate.sum)
+tab_model(tmp1,tmp2,
+          title= "Caudate Betas by Reward Rate and Motivation Ratings",
+          dv.labels = c("Caudate Betas","Caudate Betas"),
+          pred.labels = c("Intercept","Money","Liquid","Reward Rate","Motivation Ratings"),
+          show.re.var = FALSE, show.stat=TRUE, show.icc = FALSE)
+```
+
+```{r}
+tmp1<-lme4::lmer(formula = meanRR ~ moneyCode + liqCode + value.bundle.mean + (1|subID), 
+                data = data.dACC.sum)
+tmp2<-lme4::lmer(formula = meanRR ~ moneyCode + liqCode + value.bundle.mean + motive_rating + (1|subID), 
+                data = data.dACC.sum)
+tab_model(tmp1,tmp2)
+
+tmp1<-lme4::lmer(formula = meanRR ~ moneyCode + liqCode + value.bundle.mean + (1|subID), 
+                data = data.caudate.sum)
+tmp2<-lme4::lmer(formula = meanRR ~ moneyCode + liqCode + value.bundle.mean + motive_rating + (1|subID), 
+                data = data.caudate.sum)
+tab_model(tmp1,tmp2)
+
+tmp1<-lme4::lmer(formula = meanRR ~ moneyCode + liqCode + value.bundle.mean + (1|subID), 
+                data = data.putamen.sum)
+tmp2<-lme4::lmer(formula = meanRR ~ moneyCode + liqCode + value.bundle.mean + motive_rating + (1|subID), 
+                data = data.putamen.sum)
+tab_model(tmp1,tmp2)
+```
+
+```{r}
+cor.test(data.dACC.sum.sub$value.bundle.mean.normed, data.putamen.sum.sub$value.bundle.mean.normed)
+plot(data.dACC.sum.sub$value.bundle.mean.normed, data.putamen.sum.sub$value.bundle.mean.normed)
+
+cor.test(data.dACC.sum.sub$value.bundle.mean.normed, data.caudate.sum.sub$value.bundle.mean.normed)
+
+data.corr <- data.dACC.sum.sub %>% dplyr::select(subID, dACC = value.bundle.mean) %>%
+  left_join(data.vmpfc.sum.sub, by = "subID") %>% dplyr::select(subID, dACC, vmpfc = value.bundle.mean) %>%
+  left_join(data.accumbens.sum.sub, by = "subID") %>% dplyr::select(subID, dACC, vmpfc, accumbens = value.bundle.mean) %>%
+  left_join(data.caudate.sum.sub, by = "subID") %>% dplyr::select(subID, dACC, vmpfc, accumbens, caudate = value.bundle.mean) %>%
+  left_join(data.putamen.sum.sub, by = "subID") %>% dplyr::select(subID, dACC, vmpfc, accumbens, caudate, putamen = value.bundle.mean) %>%
+  left_join(data.insula.sum.sub, by = "subID") %>% dplyr::select(subID, dACC, vmpfc, accumbens, caudate, putamen,insula = value.bundle.mean) %>%
+  dplyr::select(-subID)
+
+corrplot(corr = cor(data.corr), type= "upper", 
+         tl.col = "black", order = "hclust", addCoef.col="black", sig.level = 0.05)
+
+
+ggcorrplot(corr = cor(data.corr), hc.order=TRUE, type = "lower",
+           colors = c("#6D9EC1", "white", "#E46726"), 
+           lab = TRUE,
+           title = "Correlation Matrix of Bundled Beta Estimates Across ROIs", 
+           outline.color = "black", show.diag = TRUE, 
+           p.mat = cor_pmat(data.corr))
+```
+
