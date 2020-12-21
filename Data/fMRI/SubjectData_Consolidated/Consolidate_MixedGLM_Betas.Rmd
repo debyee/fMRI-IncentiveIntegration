@@ -1,0 +1,145 @@
+---
+title: "Consolidate Mixed GLM Betas"
+author: "Debbie Yee"
+date: "March 7, 2019"
+output: html_document
+---
+This is a script that will consolidate the Mixed Betas into a single text file
+
+```{r setup, warning=FALSE}
+library(tidyr)
+library(dplyr)
+
+betas.path<-"/data/nil-external/ccp/yee/LF_BIDS/AFNI_ANALYSIS/VolGLM/MixedGLM/"
+```
+
+```{r conditions}
+sub.ids<-c("02","04","06","07","08","09","10","11","12",
+           "13","14","15","16","17","18","19","20","21",
+           "23","24","25","26","27","28","29","30","31",
+           "32","33","35","36","37","38","39","40","41",
+           "42","43","44","45","46","47","48","49","50","51")
+block.ids<-c("BASE","JUICE","NEUT","SALT")
+block.contrasts<-c("JUICE_NEUT","NEUT_SALT",
+                   "EV_SUM_MONEY4_MONEY1","EV_JUICE_MONEY4_MONEY1","EV_SALT_MONEY4_MONEY1")
+ev.ids<-c("Juice_1","Juice_2","Juice_4","Neutral_1","Neutral_2","Neutral_4",
+          "Saltwater_1","Saltwater_2","Saltwater_4","Noreward")
+parcel.ids<-c("schaefer_LF_fMRIPrep_400_7Network","allSubcortical_LF_fromCIFTI")
+```
+
+## This chunk consolidates all of the beta outputs form the different subjects.
+```{r consolidate}
+# Loop over each subject
+for (pid in (1:length(parcel.ids))) { #pid<-1
+  
+  # Consolidate block betas
+  if (exists("tmp.block")) {rm(tmp.block)}
+  for (sid in (1:length(sub.ids))) { # sid<-1
+    for (bid in (1:length(block.ids))) { #bid<-1
+      # Read in text file
+      fname<-paste0(betas.path,"sub-",sub.ids[sid],"/sub-",sub.ids[sid],"_BLOCK_",block.ids[bid],"_",parcel.ids[pid],".txt")
+      tmp<-read.table(file = fname, header = TRUE)
+      tmp<-cbind(subID=sub.ids[sid],block=block.ids[bid],tmp)
+      if (!exists("tmp.block")) {
+        tmp.block<-tmp
+        } else {
+        tmp.block<-rbind(tmp.block,tmp)
+        }
+      }
+    } # end loop over subjects
+  
+  # Consolidate EV betas
+  if (exists("tmp.ev")) {rm(tmp.ev)}
+  for (sid in 1:length(sub.ids)) { #sid<-1
+    for (evid in 1:length(ev.ids)) { #evid<-1
+      fname<-paste0(betas.path,"sub-",sub.ids[sid],"/sub-",sub.ids[sid],"_EV_",ev.ids[evid],"_",parcel.ids[pid],".txt")
+      tmp<-read.table(file = fname, header = TRUE)
+      tmp<-cbind(subID=sub.ids[sid],condition=ev.ids[evid],tmp)
+      if (!exists("tmp.ev")) {
+        tmp.ev<-tmp
+        } else {
+        tmp.ev<-rbind(tmp.ev,tmp)
+        }
+      }
+    }
+  
+  # Save consolidated data frames 
+  if (parcel.ids[pid]=="schaefer_LF_fMRIPrep_400_7Network") {
+    block.betas.schaefer<-tmp.block
+    fname.out<-paste0(betas.path,"Consolidated/betas_block_schaefer_wide.csv")
+    write.csv(x = block.betas.schaefer, file = fname.out)
+    ev.betas.schaefer<-tmp.ev
+    fname.out<-paste0(betas.path,"Consolidated/betas_ev_schaefer_wide.csv")
+    write.csv(x = ev.betas.schaefer, file = fname.out)
+  } else if (parcel.ids[pid]=="allSubcortical_LF_fromCIFTI") {
+    block.betas.subcortical<-tmp.block
+    fname.out<-paste0(betas.path,"Consolidated/betas_block_subcortical_wide.csv")
+    write.csv(x = block.betas.subcortical, file = fname.out)
+    ev.betas.subcortical<-tmp.ev
+    fname.out<-paste0(betas.path,"Consolidated/betas_ev_subcortical_wide.csv")
+    write.csv(x = ev.betas.subcortical, file = fname.out)
+  }
+
+  } # end for loop over parcels
+
+```
+
+## This next section converts the wide form data to long form, and adds the names of the parcels
+```{r convertwidetolong}
+# fname <-"/data/nil-bluearc/ccp-hcp/DMCC_ALL_BACKUPS/ATLASES/Schaefer2018_Parcellations/HCP/fslr32k/cifti/Schaefer2018_400Parcels_7Networks_order_info.txt";
+# if (file.exists(fname)) {
+#   fin <- file(fname, 'rt')
+#   tmp <- readLines(fin);
+#   close(fin); unlink(fin);
+#   if (length(tmp) != 800) { stop("not expected Schaefer key."); }
+#   tmp <- tmp[seq(from=1, to=800, by=2)];   # every-other entry is a label
+#   p.key <- gsub("7Networks_", "", tmp);
+# }
+
+# Schaefer parcel key
+sch.key <- read.delim("/data/nil-external/ccp/yee/LF_BIDS/mask_LF/Schaefer2018/Schaefer2018_400Parcels_7Networks_order.txt",header=F)   
+colnames(sch.key)<-c("parcel.id","parcel.label")
+sch.key<-sch.key[,1:2]
+
+# Subcortical parcel key
+#g.key <- read.csv("/scratch2/JoEtzel/Parcels.csv", stringsAsFactors=FALSE)
+sub.key <- read.csv("/data/nil-external/ccp/yee/LF_BIDS/mask_LF/SubCortical/Bidhan_subcorticalKey.csv",header=T)
+
+# convert block betas from schaefer parcels from long form to wide form
+block.betas.schaefer.long <- gather(data = block.betas.schaefer, key = node, value = value, Mean_1:Mean_400) %>%
+  separate(node, c("Mean","Node"), sep="_") %>%
+  select(subID,block,parcel.id=Node,value) %>%
+  mutate(parcel.id=as.numeric(parcel.id)) %>%
+  inner_join(sch.key, by="parcel.id")
+# convert block betas from subcortical parcels from long form to wide form
+block.betas.subcortical.long <- gather(data = block.betas.subcortical, key = node, value = value, Mean_350:Mean_368) %>%
+  separate(node, c("Mean","Node"), sep="_") %>%
+  select(subID,block,parcel.id=Node,value) %>%
+  mutate(parcel.id=as.numeric(parcel.id)) %>%
+  inner_join(sub.key, by="parcel.id")
+# convert ev betas from schaefer parcels from long form to wide form
+ev.betas.schaefer.long <- gather(data = ev.betas.schaefer, key = node, value = value, Mean_1:Mean_400) %>%
+  separate(node, c("Mean","Node"), sep="_") %>%
+  separate(Sub.brick, c("tent","misc"), sep="\\[", extra = "merge") %>%
+  select(subID,condition,tent,parcel.id=Node,value) %>%
+  mutate(parcel.id=as.numeric(parcel.id)) %>%
+  inner_join(sch.key, by="parcel.id")
+# convert ev betas from subcortical parcels from long form to wide form
+ev.betas.subcortical.long <- gather(data = ev.betas.subcortical, key = node, value = value, Mean_350:Mean_368) %>%
+  separate(node, c("Mean","Node"), sep="_") %>%
+  separate(Sub.brick, c("tent","misc"), sep="\\[", extra = "merge") %>%
+  select(subID,condition,tent,parcel.id=Node,value) %>%
+  mutate(parcel.id=as.numeric(parcel.id)) %>%
+  inner_join(sub.key, by="parcel.id")
+
+# save the long form files
+fname.out<-paste0(betas.path,"Consolidated/betas_block_schaefer_long.csv")
+write.csv(x = block.betas.schaefer.long, file = fname.out)
+fname.out<-paste0(betas.path,"Consolidated/betas_block_subcortical_long.csv")
+write.csv(x = block.betas.subcortical.long, file = fname.out)
+fname.out<-paste0(betas.path,"Consolidated/betas_ev_schaefer_long.csv")
+write.csv(x = ev.betas.schaefer.long, file = fname.out)
+fname.out<-paste0(betas.path,"Consolidated/betas_ev_subcortical_long.csv")
+write.csv(x = ev.betas.subcortical.long, file = fname.out)
+```
+
