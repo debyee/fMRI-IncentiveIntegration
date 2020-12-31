@@ -108,7 +108,7 @@ thres_01 = .01
 ```
 
 ## Read in Block and EV betas
-```{r betas, warning=FALSE, inlclude=TRUE}
+```{r betas, warning=FALSE, include=TRUE}
 # Schaefer Parcels (400)
 betas.block.sch<-read.csv(file = paste0(data.path.betas,"betas_block_schaefer_long.csv")) %>% 
   dplyr::select(-X) %>%
@@ -260,8 +260,9 @@ incentive9RT.means.switch <- incentive %>% filter(!subID %in% sub.exclude) %>%
          Reward = as.character(factor(money,levels=c("$","$$","$$$$"),labels=c(1,2,4))),
          MoneyLabel = factor(x = money, levels = c("$","$$","$$$$"), labels = c("Low", "Med", "High")),
          moneycode = as.numeric(as.character(factor(money,levels=c("$","$$","$$$$"),labels=c(-1,0,1)))),
-         liqcode = as.numeric(as.character(factor(Liquid,levels=c("juice","neutral","saltwater"),
-                                                  labels=c(1,0,-1))))) %>%
+         liqcode = as.numeric(as.character(factor(Liquid,levels=c("Juice","Neutral","Saltwater"),
+                                                  labels=c(1,0,-1)))),
+         switchcode = as.numeric(as.character(factor(switch_trial, levels = c("switch","repeat"), labels = c(1,0))))) %>%
   ungroup(subID)
 incentive9.means.switch = incentive %>% filter(!subID %in% sub.exclude, !is.na(subRewarded), trial!=1) %>% 
   group_by(subID, switch_trial, liquid, money) %>% 
@@ -892,6 +893,36 @@ cohen.d(subset(cond.RT.switch, condition=="baseline")$switchcost,
         na.rm = TRUE, pooled = TRUE, paired = TRUE, hedges.correction = FALSE)
 ```
 
+## Plot RT by switch and non-switch trials
+```{r}
+RT.switch.sum=summarySEwithin2(data=incentive9RT.means.switch, measurevar = "meanRT",
+                        withinvars = c("Liquid","money","switch_trial"), idvar = "subID")
+
+p.RT.switch.bar<-ggplot(data = RT.switch.sum, aes(x = money, y = meanRT, fill=Liquid)) +
+  geom_bar(position=position_dodge(width=0.8), color="black", stat="identity", width=0.8) +
+  geom_errorbar(position=position_dodge(width=0.8), 
+                aes(ymin=meanRT-se, ymax=meanRT+se), width=.2) +
+  facet_grid(.~switch_trial) + 
+  xlab("Money") + ylab("RT (ms)") +
+  labs(fill = "Liquid") +
+  scale_fill_brewer(palette="Set2") +
+  coord_cartesian(ylim=c(600,700)) +
+  #scale_fill_discrete(name="Monetary Reward") +
+  theme_classic() +
+  theme(#plot.title=element_text(size=22,face="bold", vjust=2),
+        axis.title=element_text(size=14,face = "bold"),
+        axis.text=element_text(size=14),
+        legend.position="right",
+        legend.title=element_text(size=14, face = "bold"),
+        legend.text = element_text(size=14),
+        strip.text.x = element_text(size = 12))
+p.RT.switch.bar
+
+m.SW.2<-lme4::lmer(formula = meanRT ~ switchcode * liqcode * moneycode + (1|subID), 
+            data = incentive9RT.means.switch)
+tab_model(m.SW.2)
+```
+
 ## Extended Data Save Figure 1-2: Combine RT, Accuracy, and RT switch cost plots
 ```{r}
 p.figure2<-cowplot::plot_grid(p.RT.0, p.ACC.0, p.SW.1, labels = c("a","b","c"), align = "h", ncol = 3)
@@ -1137,28 +1168,28 @@ ggsave(filename = "Supplemental_Figure1-4.eps", plot = p.figure4_sup,
 
 ## Block Beta Values by Liquid in dACC
 ```{r}
-m.dACC.RR.block<-lme4::lmer(formula = value.block ~ moneyCode + liqCode + (1|subID), 
+m.dACC.RR.block<-lme4::lmer(formula = value.block ~ moneyCode * liqCode + (1|subID), 
                       data = data.dACC.sum)
 ```
 
 ## Event-Related Beta Values by Money in dACC
 ```{r}
-m.dACC.RR.cue<-lme4::lmer(formula = value.ev ~ moneyCode + liqCode + (1|subID), 
+m.dACC.RR.cue<-lme4::lmer(formula = value.ev ~ moneyCode * liqCode + (1|subID), 
                       data = data.dACC.sum)
 ```
 
 ## Bundled Beta Values by Money in dACC
 ```{r}
-m.dACC.RR.bundle<-lme4::lmer(formula = value.bundle.mean ~ moneyCode + liqCode + (1|subID), 
+m.dACC.RR.bundle<-lme4::lmer(formula = value.bundle.mean ~ moneyCode * liqCode + (1|subID), 
                       data = data.dACC.sum)
 ```
 
 ## Table of the Block, Event-Related,and Bundled Models
 ```{r}
 tab_model(m.dACC.RR.block,m.dACC.RR.cue, m.dACC.RR.bundle,
-          title = "Dorsal ACC Betas",
+          #title = "Dorsal ACC Betas",
           dv.labels = c("Block Betas", "Event-Related Betas", "Bundled Betas"),
-          pred.labels = c("Intercept","Monetary Reward","Liquid Type"),
+          pred.labels = c("Intercept","Money","Liquid","Money:Liquid"),
           show.re.var = FALSE, show.stat = TRUE, show.icc = FALSE, show.ci = FALSE)
 ```
 
@@ -2296,7 +2327,7 @@ p.RT.mot9.switch<-ggplot(RT.sum, aes(x=MoneyLabel, y=meanRT, fill=Liquid)) +
 p.RT.mot9.switch
 
 
-#m.switch<-lmer(meanRR ~ switch_trial * liqCode * moneyCode + (1|subID), data = incentive9.means.switch)
+#m.switch<-lmer(meanRT ~ switch_trial * liqCode * moneyCode + (1|subID), data = incentive9RT.means.switch)
 #summary(m.switch)
 
 ggsave(filename = "switchcostRT.eps", plot = p.RT.switch, 
